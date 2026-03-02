@@ -1,4 +1,4 @@
-# CPU_LLM — The Semantic Compiler & Distributed AI on CPUs
+# ThreadSwarm — The Semantic Compiler & Distributed AI on CPUs
 
 **Software 3.0**: Natural-language intent is compiled into a Directed Acyclic Graph (DAG) of micro-tasks, executed by a swarm of small vision/language models on **local CPUs**—no GPUs required.
 
