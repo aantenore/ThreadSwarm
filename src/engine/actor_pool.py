@@ -20,7 +20,7 @@ from .shared_memory import attach_and_reconstruct
 logger = logging.getLogger(__name__)
 
 # Value-based sentinel so it survives pickle/unpickle across process boundary.
-SHUTDOWN_SENTINEL = "__CPU_LLM_SHUTDOWN__"
+SHUTDOWN_SENTINEL = "__ThreadSwarm_SHUTDOWN__"
 
 
 def _default_inference(image: Any, instruction: str, task_id: str) -> dict[str, Any]:
