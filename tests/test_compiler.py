@@ -39,6 +39,19 @@ def test_parse_llm_output_with_markdown():
     assert dag.tasks[0].id == "t1"
 
 
+def test_parse_llm_output_with_modality():
+    """Parse DAG with modality and model_type for heterogeneous actors."""
+    compiler = SemanticCompiler(base_url="http://localhost:11434/v1", model="dummy")
+    raw = '''[
+        {"id": "t1", "description": "OCR", "instruction": "Extract text", "dependencies": [], "modality": "vision", "model_type": "smolvlm"},
+        {"id": "t2", "description": "Summarize", "instruction": "Summarize log", "dependencies": ["t1"], "modality": "text", "model_type": "gemma-1b"}
+    ]'''
+    dag = compiler._parse_llm_output(raw)
+    assert len(dag.tasks) == 2
+    assert dag.tasks[0].modality == "vision" and dag.tasks[0].model_type == "smolvlm"
+    assert dag.tasks[1].modality == "text" and dag.tasks[1].model_type == "gemma-1b"
+
+
 def test_parse_llm_output_invalid_raises():
     compiler = SemanticCompiler(base_url="http://localhost:11434/v1", model="dummy")
     with pytest.raises(SemanticCompilationError):

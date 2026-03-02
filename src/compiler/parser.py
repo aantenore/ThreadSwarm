@@ -1,9 +1,9 @@
 """
-Semantic Compiler: translates natural-language intent into a DAG of SubTasks.
+Semantic Compiler: translates natural-language multimodal intent into a DAG of SubTasks.
 
-Connects to a local OpenAI-compatible LLM (e.g. Ollama, LM Studio) to perform
-intent analysis and task decomposition. Output is a strict JSON array of
-SubTask objects (Pydantic-validated) representing a Directed Acyclic Graph.
+Connects to a local OpenAI-compatible LLM to perform intent analysis and task
+decomposition. Output is a heterogeneous DAG: each SubTask specifies modality
+and optional model type (text, code, vision, audio, etc.) for the actor swarm.
 """
 
 from __future__ import annotations
@@ -18,6 +18,14 @@ from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 
+# Modality / model-type hints for heterogeneous DAG (which actor/model handles the task)
+MODALITY_TEXT = "text"
+MODALITY_CODE = "code"
+MODALITY_VISION = "vision"
+MODALITY_AUDIO = "audio"
+MODALITY_MULTIMODAL = "multimodal"
+MODALITIES = (MODALITY_TEXT, MODALITY_CODE, MODALITY_VISION, MODALITY_AUDIO, MODALITY_MULTIMODAL)
+
 
 # ---------------------------------------------------------------------------
 # DAG schema (Pydantic)
@@ -25,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 
 class SubTask(BaseModel):
-    """A single micro-task in the execution DAG."""
+    """A single micro-task in the execution DAG with modality and optional model hint."""
 
     id: str = Field(..., description="Unique task identifier (e.g. task_1, task_2)")
     description: str = Field(..., description="Human-readable description of the task")
@@ -36,7 +44,15 @@ class SubTask(BaseModel):
     )
     payload_hint: str | None = Field(
         default=None,
-        description="Optional hint for payload (e.g. 'frame', 'region', 'text')",
+        description="Hint for payload (e.g. 'frame', 'chapter', 'log_file', 'audio_chunk')",
+    )
+    modality: str = Field(
+        default=MODALITY_TEXT,
+        description="Required modality for this task: text, code, vision, audio, or multimodal",
+    )
+    model_type: str | None = Field(
+        default=None,
+        description="Optional model type hint (e.g. gemma-1b, deepseek-r1-1.5b, smolvlm) for actor selection",
     )
 
 
@@ -58,12 +74,11 @@ class TaskDAG(BaseModel):
             for dep in t.dependencies:
                 if dep not in ids:
                     return False
-        # Simple cycle check: toposort
         seen: set[str] = set()
         for t in self.tasks:
             for dep in t.dependencies:
                 if dep not in seen:
-                    pass  # dependency is earlier in list
+                    pass
             seen.add(t.id)
         return True
 
@@ -72,21 +87,21 @@ class TaskDAG(BaseModel):
 # Semantic Compiler
 # ---------------------------------------------------------------------------
 
-DEFAULT_SYSTEM_PROMPT = """You are a Semantic Compiler for a distributed Vision AI system. Your job is to take a user's high-level intent and decompose it into a strict Directed Acyclic Graph (DAG) of micro-tasks that can be executed in parallel on CPU by small vision/language models.
+DEFAULT_SYSTEM_PROMPT = """You are a Semantic Compiler for a distributed multimodal AI system. Your job is to take a user's high-level intent (involving text, code, images, audio, video, or mixed inputs) and decompose it into a strict Directed Acyclic Graph (DAG) of micro-tasks that can be executed in parallel on CPU by small specialized models.
 
 Rules:
 - Output ONLY a valid JSON array of task objects. No markdown, no explanation outside the JSON.
-- Each task must have: "id" (string, e.g. "task_1"), "description" (string), "instruction" (string, precise directive for the model), "dependencies" (array of task ids that must complete first), and optionally "payload_hint" (string).
+- Each task must have: "id" (string, e.g. "task_1"), "description" (string), "instruction" (string, precise directive), "dependencies" (array of task ids that must complete first). Optionally: "payload_hint" (string), "modality" (one of: text, code, vision, audio, multimodal), "model_type" (string, e.g. "gemma-1b", "deepseek-r1-1.5b", "smolvlm" for actor selection).
 - IDs must be unique. Dependencies must reference earlier task IDs. No cycles.
-- Keep tasks atomic and small (e.g. "Extract text from this region", "Classify if person wears hard hat in this crop").
-- The first tasks often handle splitting input (e.g. split video into frames, split image into regions). Later tasks depend on them and do the actual analysis.
+- Keep tasks atomic. Set "modality" so the orchestrator can assign the right model: use "text" for summarization/QA, "code" for logic/code analysis, "vision" for images/frames, "audio" for audio, "multimodal" when input mixes modalities.
+- First tasks often prepare data (e.g. OCR logs, split document, extract frames). Later tasks depend on them and do the actual analysis or synthesis.
 """
 
 
 class SemanticCompiler:
     """
-    Compiler that calls a local LLM to turn natural-language intent into a
-    DAG of SubTasks. Uses an OpenAI-compatible API (e.g. Ollama at localhost:11434).
+    Compiler that calls a local LLM to turn natural-language (multimodal) intent
+    into a heterogeneous DAG of SubTasks. Uses an OpenAI-compatible API (e.g. Ollama).
     """
 
     def __init__(
@@ -103,10 +118,10 @@ class SemanticCompiler:
 
     def compile(self, user_prompt: str) -> TaskDAG:
         """
-        Analyze the user's intent and return a validated TaskDAG.
+        Analyze the user's intent and return a validated heterogeneous TaskDAG.
 
-        :param user_prompt: Natural language description of what the user wants.
-        :return: TaskDAG of SubTasks.
+        :param user_prompt: Natural language description (can reference code, docs, images, audio).
+        :return: TaskDAG of SubTasks with modality and optional model_type.
         :raises SemanticCompilationError: On API or parsing failure.
         """
         messages = [
@@ -144,7 +159,6 @@ class SemanticCompiler:
     def _parse_llm_output(self, content: str) -> TaskDAG:
         """Extract a JSON array from LLM output and parse into TaskDAG."""
         content = content.strip()
-        # Strip markdown code block if present
         if content.startswith("```"):
             content = re.sub(r"^```(?:json)?\s*", "", content)
             content = re.sub(r"\s*```\s*$", "", content)
