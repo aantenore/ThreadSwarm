@@ -23,7 +23,14 @@
 - **No threading for AI inference** — use `multiprocessing` only.
 - **No pickle / IPC queues for image tensors** — images only via shared memory; only metadata over queues.
 
-See `.cursorrules` for full engineering and contribution guidelines.
+## Engineering & contribution guidelines
+
+- **No threading for inference** — Do not use Python's `threading` for AI/model inference (GIL). Use `multiprocessing` (Process, Queue, Pipe, etc.).
+- **No pickle/IPC for image data** — Do not pass image tensors or large buffers via pickle or queues. Use `multiprocessing.shared_memory.SharedMemory`; only send metadata (name, shape, dtype) over queues.
+- **Windows (spawn)** — When using `ActorHypervisor` with a custom `run_inference_hook`, the hook must be picklable (e.g. a module-level function), not a lambda or nested function.
+- **Code** — Use type hints and Pydantic for public APIs and task schemas. Keep `src/compiler` for intent → DAG logic, `src/engine` for execution, `src/models` for model adapters.
+- **RFCs** — New architectural features require an RFC in `docs/rfcs/` before code; implementation must follow the spec.
+- **Quality** — No placeholders or mocks in the core engine; contributions should be production-ready.
 
 ## Structure
 
