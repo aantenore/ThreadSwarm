@@ -1,10 +1,11 @@
 """
-Actor Swarm: process-based worker pool for executing DAG tasks with zero-copy shared memory.
+Actor Swarm: process-based heterogeneous worker pool for DAG execution with zero-copy shared memory.
 
-ActorHypervisor spawns N worker processes (based on os.cpu_count()). Each ModelActor
-runs an infinite loop: read sub-tasks from a multiprocessing.Queue, reconstruct
-images from shared memory metadata, run inference, and push results to a result queue.
-No threading for inference; no pickle for image data.
+ActorHypervisor can run a single homogeneous pool or a heterogeneous set of pools
+(keyed by model_type). Each pool has its own task queue and run_inference_hook
+(e.g. Gemma-1B for text, SmolVLM for vision). Tasks carry context_metadata from
+ContextMemoryManager; workers reconstruct payloads (ndarray, text, bytes) without
+copying. No threading for inference; no pickle for context payloads.
 """
 
 from __future__ import annotations
@@ -19,17 +20,29 @@ from .shared_memory import attach_and_reconstruct
 
 logger = logging.getLogger(__name__)
 
-# Value-based sentinel so it survives pickle/unpickle across process boundary.
 SHUTDOWN_SENTINEL = "__ThreadSwarm_SHUTDOWN__"
 
+# Signature for inference hook: (context_payload, instruction, task_id, modality, model_type) -> result dict
+InferenceHook = Callable[[Any, str, str, str, str | None], dict[str, Any]]
 
-def _default_inference(image: Any, instruction: str, task_id: str) -> dict[str, Any]:
-    """Stub inference when no model is provided. Override via run_inference_hook."""
+
+def _default_inference(
+    context: Any,
+    instruction: str,
+    task_id: str,
+    modality: str,
+    model_type: str | None,
+) -> dict[str, Any]:
+    """Stub when no hook is provided."""
     return {
         "task_id": task_id,
         "instruction": instruction[:80],
         "output": "stub",
-        "shape": getattr(image, "shape", None),
+        "modality": modality,
+        "model_type": model_type,
+        "context_preview": (
+            getattr(context, "shape", None) if hasattr(context, "shape") else (str(context)[:100] if context else None)
+        ),
     }
 
 
@@ -37,14 +50,14 @@ def _worker_loop(
     task_queue: Queue,
     result_queue: Queue,
     worker_id: int,
-    run_inference_hook: Callable[[Any, str, str], dict[str, Any]] | None,
+    model_type: str,
+    run_inference_hook: InferenceHook | None,
 ) -> None:
     """
-    Single worker process: read tasks from task_queue, attach to shared memory,
-    run inference, push result to result_queue. Exits on SHUTDOWN_SENTINEL (None).
+    Worker process: read tasks, attach to context via ContextMemoryManager metadata,
+    run inference hook, push result. Exits on SHUTDOWN_SENTINEL.
     """
     inference = run_inference_hook or _default_inference
-    # Ignore SIGINT in workers so only the main process handles Ctrl+C
     try:
         signal.signal(signal.SIGINT, signal.SIG_IGN)
     except (ValueError, AttributeError):
@@ -63,14 +76,16 @@ def _worker_loop(
 
         task_id = task.get("task_id", "")
         instruction = task.get("instruction", "")
-        image_metadata = task.get("image_metadata")
+        modality = task.get("modality", "text")
+        task_model_type = task.get("model_type") or model_type
+        context_metadata = task.get("context_metadata") or task.get("image_metadata")
         shm_handle = None
         try:
-            if image_metadata:
-                shm_handle, arr = attach_and_reconstruct(image_metadata)
-                result = inference(arr, instruction, task_id)
+            if context_metadata:
+                shm_handle, payload = attach_and_reconstruct(context_metadata)
+                result = inference(payload, instruction, task_id, modality, task_model_type)
             else:
-                result = inference(None, instruction, task_id)
+                result = inference(None, instruction, task_id, modality, task_model_type)
             result_queue.put({"task_id": task_id, "result": result, "error": None})
         except Exception as e:
             logger.exception("Worker %s task %s failed: %s", worker_id, task_id, e)
@@ -86,18 +101,12 @@ def _worker_loop(
 
 
 class ModelActor:
-    """
-    Represents a single worker process that runs inference on sub-tasks.
-    Not instantiated directly by users; ActorHypervisor spawns these.
-    """
+    """Single worker process for a given model type. Spawned by ActorHypervisor."""
 
-    def __init__(
-        self,
-        process: Process,
-        worker_id: int,
-    ):
+    def __init__(self, process: Process, worker_id: int, model_type: str):
         self.process = process
         self.worker_id = worker_id
+        self.model_type = model_type
 
     @property
     def is_alive(self) -> bool:
@@ -112,62 +121,84 @@ class ModelActor:
 
 class ActorHypervisor:
     """
-    Spawns and manages a pool of worker processes. Each worker listens to
-    task_queue for sub-tasks (containing shared memory metadata, not raw images),
-    reconstructs the image via zero-copy, runs inference, and sends results
-    to result_queue. Graceful shutdown: send one None per worker, then join.
+    Heterogeneous actor pool: spawns one or more worker pools by model_type, each
+    with its own task queue and inference hook. Tasks carry context_metadata
+    (from ContextMemoryManager); workers reconstruct and run the hook. Single
+    result queue for all pools. Submit with task["model_type"] to route.
     """
 
     def __init__(
         self,
         num_workers: int | None = None,
-        run_inference_hook: Callable[[Any, str, str], dict[str, Any]] | None = None,
+        run_inference_hook: InferenceHook | None = None,
+        worker_configs: list[dict[str, Any]] | None = None,
     ):
         """
-        run_inference_hook: (image, instruction, task_id) -> result dict.
-        On Windows (spawn) this must be a picklable callable (e.g. module-level function).
+        Either (num_workers, run_inference_hook) for one homogeneous pool, or
+        worker_configs for heterogeneous pools. worker_configs: list of
+        {"model_type": str, "num_workers": int, "run_inference_hook": callable}.
+        Hooks must be picklable (e.g. module-level) on Windows.
         """
-        self._num_workers = num_workers or max(1, (os.cpu_count() or 1))
-        self._run_inference_hook = run_inference_hook
-        self._task_queue: Queue | None = None
         self._result_queue: Queue | None = None
-        self._actors: list[ModelActor] = []
         self._started = False
+        self._pools: list[tuple[str, Queue, list[ModelActor], int]] = []  # (model_type, task_queue, actors, num_workers)
+
+        if worker_configs:
+            self._worker_configs = list(worker_configs)
+            self._num_workers = sum(c.get("num_workers", 1) for c in worker_configs)
+        else:
+            n = num_workers or max(1, (os.cpu_count() or 1))
+            self._worker_configs = [{"model_type": "default", "num_workers": n, "run_inference_hook": run_inference_hook}]
+            self._num_workers = n
 
     @property
     def num_workers(self) -> int:
         return self._num_workers
 
     def start(self) -> None:
-        """Spawn N worker processes. Idempotent."""
+        """Spawn all worker processes (one pool per worker_config). Idempotent."""
         if self._started:
             return
-        self._task_queue = Queue()
         self._result_queue = Queue()
-        self._actors = []
-        for i in range(self._num_workers):
-            p = Process(
-                target=_worker_loop,
-                args=(self._task_queue, self._result_queue, i, self._run_inference_hook),
-                name=f"ModelActor-{i}",
-            )
-            p.start()
-            self._actors.append(ModelActor(p, i))
+        self._pools = []
+        for cfg in self._worker_configs:
+            model_type = cfg.get("model_type", "default")
+            n = cfg.get("num_workers", 1)
+            hook = cfg.get("run_inference_hook")
+            task_queue = Queue()
+            actors = []
+            for i in range(n):
+                p = Process(
+                    target=_worker_loop,
+                    args=(task_queue, self._result_queue, len(self._pools) * 100 + i, model_type, hook),
+                    name=f"ModelActor-{model_type}-{i}",
+                )
+                p.start()
+                actors.append(ModelActor(p, len(self._pools) * 100 + i, model_type))
+            self._pools.append((model_type, task_queue, actors, n))
         self._started = True
-        logger.info("ActorHypervisor started with %s workers", self._num_workers)
+        logger.info("ActorHypervisor started with %s pools, %s total workers", len(self._pools), self._num_workers)
 
-    def submit(self, task: dict[str, Any]) -> None:
+    def submit(self, task: dict[str, Any], model_type: str | None = None) -> None:
         """
-        Submit a sub-task to the pool. Task must be a dict with at least
-        task_id and instruction. If the task involves an image, include
-        image_metadata (name, shape, dtype) from VisionMemoryManager.
+        Submit a sub-task. Task must have task_id, instruction; optionally
+        context_metadata (from ContextMemoryManager), modality, model_type.
+        Routes to the pool for task.get("model_type") or model_type or "default".
         """
-        if not self._started or self._task_queue is None:
+        if not self._started or self._result_queue is None:
             raise RuntimeError("ActorHypervisor not started; call start() first")
-        self._task_queue.put(task)
+        route = task.get("model_type") or model_type or "default"
+        for mt, tq, _actors, _ in self._pools:
+            if mt == route:
+                tq.put(task)
+                return
+        if self._pools:
+            self._pools[0][1].put(task)
+            return
+        raise RuntimeError("No worker pools available")
 
     def get_result(self, block: bool = True, timeout: float | None = None) -> dict[str, Any] | None:
-        """Get one result from the result queue. Returns None if timeout and block=False."""
+        """Get one result from the shared result queue."""
         if self._result_queue is None:
             return None
         try:
@@ -176,27 +207,27 @@ class ActorHypervisor:
             return None
 
     def shutdown(self, timeout: float = 10.0) -> None:
-        """
-        Graceful shutdown: send one None sentinel per worker, then join.
-        If workers do not exit within timeout, terminate them.
-        """
-        if not self._started or self._task_queue is None:
+        """Send shutdown sentinel to each pool, join all actors."""
+        if not self._started:
             self._started = False
             return
-        for _ in range(self._num_workers):
-            try:
-                self._task_queue.put(SHUTDOWN_SENTINEL)
-            except Exception:
-                break
-        for actor in self._actors:
-            actor.join(timeout=max(0, timeout / max(1, len(self._actors))))
-        for actor in self._actors:
-            if actor.is_alive:
-                logger.warning("Worker %s did not exit gracefully; terminating", actor.worker_id)
-                actor.terminate()
-                actor.join(timeout=2.0)
-        self._actors = []
-        self._task_queue = None
+        for _model_type, task_queue, actors, n in self._pools:
+            for _ in range(n):
+                try:
+                    task_queue.put(SHUTDOWN_SENTINEL)
+                except Exception:
+                    break
+        per_pool = max(0.1, timeout / max(1, len(self._pools)))
+        for _model_type, _tq, actors, _ in self._pools:
+            for actor in actors:
+                actor.join(timeout=per_pool)
+        for _model_type, _tq, actors, _ in self._pools:
+            for actor in actors:
+                if actor.is_alive:
+                    logger.warning("Worker %s did not exit gracefully; terminating", actor.worker_id)
+                    actor.terminate()
+                    actor.join(timeout=2.0)
+        self._pools = []
         self._result_queue = None
         self._started = False
         logger.info("ActorHypervisor shutdown complete")

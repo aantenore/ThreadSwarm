@@ -1,14 +1,16 @@
 """
-Zero-Copy Shared Memory for vision payloads.
+Zero-copy shared memory for generic multimodal context payloads.
 
-Images are loaded once, placed in a multiprocessing.shared_memory.SharedMemory
-block, and workers receive only metadata (name, shape, dtype) to attach to the
-same block and reconstruct the numpy array without copying the buffer.
+ContextMemoryManager allocates multiprocessing.shared_memory.SharedMemory blocks
+for large payloads (images, audio buffers, text, code, binary data). Workers
+receive only metadata and attach to the same block to reconstruct the payload
+without copying across processes. No pickle for context data.
 """
 
 from __future__ import annotations
 
 import logging
+import time
 from multiprocessing import shared_memory
 from pathlib import Path
 from typing import Any
@@ -17,36 +19,37 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-# OpenCV is optional for file loading; numpy can still wrap raw buffers
+# OpenCV optional for image loading
 try:
     import cv2
     HAS_CV2 = True
 except ImportError:
     HAS_CV2 = False
 
+# Payload type identifiers for reconstruction
+PAYLOAD_NDARRAY = "ndarray"
+PAYLOAD_TEXT = "text"
+PAYLOAD_BYTES = "bytes"
+
 
 def _load_image_cv2(path: str | Path) -> np.ndarray:
-    path = str(path)
     if not HAS_CV2:
-        raise RuntimeError("opencv-python is required to load images from file; install opencv-python-headless")
-    arr = cv2.imread(path)
+        raise RuntimeError("opencv-python required for image loading; install opencv-python-headless")
+    arr = cv2.imread(str(path))
     if arr is None:
         raise FileNotFoundError(f"Could not load image: {path}")
-    # BGR -> RGB for typical ML pipelines; optional, can be made configurable
     arr = cv2.cvtColor(arr, cv2.COLOR_BGR2RGB)
     return np.ascontiguousarray(arr)
 
 
-def _load_image_numpy(path: str | Path) -> np.ndarray:
-    """Fallback: load as numpy .npy or raw (e.g. .bin with known shape)."""
-    path = Path(path)
+def _load_image_numpy(path: Path) -> np.ndarray:
     if path.suffix.lower() == ".npy":
         return np.load(path)
     raise ValueError(f"Cannot load image from {path} without OpenCV; use .npy or install opencv-python-headless")
 
 
 def load_image(path: str | Path) -> np.ndarray:
-    """Load an image from disk into a contiguous numpy array (RGB, uint8 or float)."""
+    """Load an image from disk into a contiguous numpy array (RGB)."""
     path = Path(path)
     if not path.exists():
         raise FileNotFoundError(str(path))
@@ -55,77 +58,101 @@ def load_image(path: str | Path) -> np.ndarray:
     return _load_image_numpy(path)
 
 
-class VisionMemoryManager:
+class ContextMemoryManager:
     """
-    Manages zero-copy shared memory for image (and optionally tensor) data.
+    Manages zero-copy shared memory for generic large context payloads:
+    images (ndarray), text, code, audio buffers, binary blobs.
 
-    - Allocates a SharedMemory block and copies image data into it.
-    - Returns metadata (name, shape, dtype) so workers can attach and build
-      a numpy array that views the same memory without copying.
+    - Allocates a SharedMemory block and copies payload into it.
+    - Returns metadata (name, size, payload_type, and type-specific fields) so
+      workers can attach and reconstruct without copying the buffer across processes.
     """
 
-    def __init__(self, name_prefix: str = "vision_"):
+    def __init__(self, name_prefix: str = "ctx_"):
         self._name_prefix = name_prefix
         self._shm: shared_memory.SharedMemory | None = None
         self._name: str | None = None
-        self._shape: tuple[int, ...] | None = None
-        self._dtype: np.dtype | None = None
+        self._metadata: dict[str, Any] | None = None
 
-    def load_and_share(self, image: np.ndarray | str | Path, name: str | None = None) -> dict[str, Any]:
+    def _unique_name(self, size: int) -> str:
+        name = f"{self._name_prefix}{int(time.time() * 1e6)}_{size}"
+        return "".join(c if c.isalnum() or c in "_-" else "_" for c in name)[:64]
+
+    def load_and_share(
+        self,
+        payload: np.ndarray | str | bytes | bytearray | memoryview,
+        name: str | None = None,
+    ) -> dict[str, Any]:
         """
-        Load an image (from array or path), put it in shared memory, and return
-        metadata for workers to attach.
+        Put a large payload into shared memory and return metadata for workers.
 
-        :param image: Either a numpy array (contiguous) or a path to an image file.
-        :param name: Optional name for the shared memory block; if None, a unique name is generated.
-        :return: Dict with keys: name (str), shape (tuple), dtype (str), size (int).
-                 Workers use this to reconstruct the array via attach_and_reconstruct.
+        :param payload: ndarray (e.g. image, audio), str (text/code), or bytes-like.
+        :param name: Optional shared memory block name; if None, a unique name is generated.
+        :return: Metadata dict: name, size, payload_type, and type-specific keys
+                 (shape, dtype for ndarray; encoding for text). Use with attach_and_reconstruct.
         """
-        if isinstance(image, (str, Path)):
-            image = load_image(image)
-        arr = np.asarray(image)
-        if not arr.flags.c_contiguous:
-            arr = np.ascontiguousarray(arr)
+        if isinstance(payload, np.ndarray):
+            return self._share_ndarray(payload, name)
+        if isinstance(payload, str):
+            return self._share_text(payload, name)
+        if isinstance(payload, (bytes, bytearray, memoryview)):
+            return self._share_bytes(bytes(payload) if isinstance(payload, (bytearray, memoryview)) else payload, name)
+        raise TypeError(f"Unsupported payload type: {type(payload)}")
 
+    def _share_ndarray(self, arr: np.ndarray, name: str | None) -> dict[str, Any]:
+        arr = np.ascontiguousarray(arr)
         size = arr.nbytes
-        if name is None:
-            name = f"{self._name_prefix}{id(arr)}_{size}"
-        # SharedMemory names must be valid; strip any path chars
-        name = "".join(c if c.isalnum() or c in "_-" else "_" for c in name)[:32]
-
+        name = name or self._unique_name(size)
         try:
             shm = shared_memory.SharedMemory(create=True, size=size, name=name)
         except FileExistsError:
-            # Name collision; use a more unique name
-            import time
-            name = f"{self._name_prefix}{int(time.time() * 1e6)}_{size}"
-            name = "".join(c if c.isalnum() or c in "_-" else "_" for c in name)[:32]
+            name = self._unique_name(size)
             shm = shared_memory.SharedMemory(create=True, size=size, name=name)
-
         np.copyto(np.ndarray(arr.shape, dtype=arr.dtype, buffer=shm.buf), arr)
-
         self._shm = shm
         self._name = name
-        self._shape = arr.shape
-        self._dtype = arr.dtype
-
-        return {
+        self._metadata = {
             "name": name,
+            "size": size,
+            "payload_type": PAYLOAD_NDARRAY,
             "shape": tuple(arr.shape),
             "dtype": str(arr.dtype),
-            "size": size,
         }
+        return dict(self._metadata)
+
+    def _share_text(self, text: str, name: str | None) -> dict[str, Any]:
+        data = text.encode("utf-8")
+        return self._share_bytes(data, name, payload_type=PAYLOAD_TEXT, encoding="utf-8")
+
+    def _share_bytes(
+        self,
+        data: bytes,
+        name: str | None,
+        payload_type: str = PAYLOAD_BYTES,
+        encoding: str | None = None,
+    ) -> dict[str, Any]:
+        size = len(data)
+        name = name or self._unique_name(size)
+        try:
+            shm = shared_memory.SharedMemory(create=True, size=size, name=name)
+        except FileExistsError:
+            name = self._unique_name(size)
+            shm = shared_memory.SharedMemory(create=True, size=size, name=name)
+        shm.buf[:size] = data
+        self._shm = shm
+        self._name = name
+        self._metadata = {
+            "name": name,
+            "size": size,
+            "payload_type": payload_type,
+        }
+        if encoding:
+            self._metadata["encoding"] = encoding
+        return dict(self._metadata)
 
     def get_metadata(self) -> dict[str, Any] | None:
-        """Return current shared block metadata if one has been created."""
-        if self._name is None or self._shape is None or self._dtype is None:
-            return None
-        return {
-            "name": self._name,
-            "shape": self._shape,
-            "dtype": str(self._dtype),
-            "size": int(np.prod(self._shape) * self._dtype.itemsize),
-        }
+        """Return metadata for the current shared block, if any."""
+        return dict(self._metadata) if self._metadata else None
 
     def close(self) -> None:
         """Unlink the shared memory block (call when the owner is done)."""
@@ -137,30 +164,41 @@ class VisionMemoryManager:
                 logger.debug("SharedMemory close/unlink: %s", e)
             self._shm = None
             self._name = None
-            self._shape = None
-            self._dtype = None
+            self._metadata = None
 
-    def __enter__(self) -> VisionMemoryManager:
+    def __enter__(self) -> ContextMemoryManager:
         return self
 
     def __exit__(self, *args: Any) -> None:
         self.close()
 
 
-def attach_and_reconstruct(metadata: dict[str, Any]) -> tuple[shared_memory.SharedMemory, np.ndarray]:
+def attach_and_reconstruct(metadata: dict[str, Any]) -> tuple[shared_memory.SharedMemory, np.ndarray | str | bytes]:
     """
-    Attach to an existing SharedMemory block using metadata from the manager
-    and return the handle and a numpy array that views the same buffer (zero-copy).
+    Attach to an existing SharedMemory block and reconstruct the payload (zero-copy
+    where possible). Caller must keep the SharedMemory reference until done, then close it.
 
-    The caller must keep the SharedMemory reference until done with the array,
-    then call shm.close() (and optionally unlink only from the creating process).
-
-    :param metadata: Dict with "name", "shape", "dtype" (and optionally "size").
-    :return: (shm, array) — keep shm referenced until you are done with the array.
+    :param metadata: Dict from ContextMemoryManager.load_and_share (name, size, payload_type, ...).
+    :return: (shm, payload) — payload is ndarray (view), str (decoded text), or bytes (copy of buffer).
     """
     name = metadata["name"]
-    shape = tuple(metadata["shape"])
-    dtype = np.dtype(metadata["dtype"])
+    size = metadata["size"]
+    payload_type = metadata.get("payload_type", PAYLOAD_NDARRAY)
     shm = shared_memory.SharedMemory(name=name)
-    arr = np.ndarray(shape, dtype=dtype, buffer=shm.buf)
-    return shm, arr
+
+    if payload_type == PAYLOAD_NDARRAY:
+        shape = tuple(metadata["shape"])
+        dtype = np.dtype(metadata["dtype"])
+        arr = np.ndarray(shape, dtype=dtype, buffer=shm.buf)
+        return shm, arr
+    if payload_type == PAYLOAD_TEXT:
+        encoding = metadata.get("encoding", "utf-8")
+        text = bytes(shm.buf[:size]).decode(encoding)
+        return shm, text
+    # PAYLOAD_BYTES or unknown: return bytes (one copy from shared buffer)
+    data = bytes(shm.buf[:size])
+    return shm, data
+
+
+# Backwards compatibility alias
+VisionMemoryManager = ContextMemoryManager
