@@ -2,8 +2,8 @@
 Semantic Compiler: translates natural-language multimodal intent into a DAG of SubTasks.
 
 Connects to a local OpenAI-compatible LLM to perform intent analysis and task
-decomposition. Output is a heterogeneous DAG: each SubTask specifies modality
-and optional model type (text, code, vision, audio, etc.) for the actor swarm.
+decomposition. Output is a heterogeneous DAG: each SubTask specifies modality,
+an optional local tool hint, and an optional model type for the execution runtime.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 
-# Modality / model-type hints for heterogeneous DAG (which actor/model handles the task)
+# Modality hints for heterogeneous DAG tasks.
 MODALITY_TEXT = "text"
 MODALITY_CODE = "code"
 MODALITY_VISION = "vision"
@@ -33,7 +33,7 @@ MODALITIES = (MODALITY_TEXT, MODALITY_CODE, MODALITY_VISION, MODALITY_AUDIO, MOD
 
 
 class SubTask(BaseModel):
-    """A single micro-task in the execution DAG with modality and optional model hint."""
+    """A single micro-task in the execution DAG with routing hints for local tools or models."""
 
     id: str = Field(..., description="Unique task identifier (e.g. task_1, task_2)")
     description: str = Field(..., description="Human-readable description of the task")
@@ -138,7 +138,7 @@ class TaskDAG(BaseModel):
 # Semantic Compiler
 # ---------------------------------------------------------------------------
 
-DEFAULT_SYSTEM_PROMPT = """You are a Semantic Compiler for a distributed multimodal AI system. Your job is to take a user's high-level intent (involving text, code, images, audio, video, or mixed inputs) and decompose it into a strict Directed Acyclic Graph (DAG) of micro-tasks that can be executed in parallel on CPU by small specialized models.
+DEFAULT_SYSTEM_PROMPT = """You are a Semantic Compiler for a distributed multimodal AI system. Your job is to take a user's high-level intent (involving text, code, images, audio, video, or mixed inputs) and decompose it into a strict Directed Acyclic Graph (DAG) of micro-tasks that can be executed in parallel on CPU by local tools or lightweight specialized workers.
 
 Rules:
 - Output ONLY a valid JSON array of task objects. No markdown, no explanation outside the JSON.
@@ -172,7 +172,7 @@ class SemanticCompiler:
         Analyze the user's intent and return a validated heterogeneous TaskDAG.
 
         :param user_prompt: Natural language description (can reference code, docs, images, audio).
-        :return: TaskDAG of SubTasks with modality and optional model_type.
+        :return: TaskDAG of SubTasks with modality and optional tool/model routing hints.
         :raises SemanticCompilationError: On API or parsing failure.
         """
         messages = [

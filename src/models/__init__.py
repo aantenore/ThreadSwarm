@@ -1,1 +1,1 @@
-"""Model adapters for SLMs (e.g. vision/language models on CPU)."""
+"""Optional model adapters for tasks that need more than local CPU-friendly tools."""
