@@ -162,7 +162,9 @@ Only the small metadata dict goes over the task queue; the context stays in one 
 - **How**:
   - **ActorHypervisor**: either one homogeneous pool `(num_workers, run_inference_hook)` or **worker_configs**: list of `{model_type, num_workers, run_inference_hook}`. Each config gets its own task queue and N processes; all push to one result queue.
   - **Task payload**: `task_id`, `instruction`, optional `context_metadata`, `modality`, `model_type`. Routing: `submit(task)` sends to the pool whose `model_type` matches `task["model_type"]` (or default).
-  - **run_inference_hook(context, instruction, task_id, modality, model_type)**: worker calls with reconstructed payload (ndarray/str/bytes or None). Must be **picklable** (e.g. module-level) on Windows.
+  - **Tool-friendly routing**: tasks may also declare a `tool_name`, so the same runtime can dispatch work to CPU-friendly local tools, not only model-specific workers.
+  - **Structured execution context**: orchestrated tasks can receive the shared `payload` plus small `dependency_results`, instead of having upstream artifacts hidden inside the instruction text.
+  - **run_inference_hook(context, instruction, task_id, modality, model_type)**: worker calls with reconstructed payload or with a structured execution context for orchestrated DAG runs. Must be **picklable** (e.g. module-level) on Windows.
   - **Shutdown**: one sentinel per worker, then join. No threading for inference — only processes.
 
 **Process layout** (heterogeneous):
@@ -190,8 +192,27 @@ flowchart TB
     W1 --> RQ
     W2 --> RQ
     W3 --> RQ
-    RQ --> H
+RQ --> H
 ```
+
+---
+
+### 4. DAG orchestrator (`src/engine/orchestrator.py`)
+
+- **Role**: Execute a validated `TaskDAG` over local tools or model-backed workers.
+- **How**:
+  - Starts every task whose dependencies are satisfied.
+  - Tracks completions in the shared result queue and unlocks downstream tasks when ready.
+  - Passes large context through shared memory and small upstream outputs through structured dependency results.
+  - Returns a structured execution report plus a default reducer over leaf tasks.
+
+### 5. Local tool registry (`src/engine/tool_registry.py`)
+
+- **Role**: Make complex workflows runnable on almost any PC by registering plain Python tools as task executors.
+- **How**:
+  - Register a local tool name and its callable.
+  - Convert the registry to `ActorHypervisor` worker configs.
+  - Let the DAG route tasks by `tool_name`, keeping the execution model CPU-friendly and portable.
 
 ---
 
@@ -201,10 +222,11 @@ flowchart TB
 |------|------|-------------------------|
 | 1. Intent → plan | Semantic Compiler produces heterogeneous DAG | `SemanticCompiler` → `TaskDAG` with `SubTask.modality` and `SubTask.model_type` |
 | 2. Context in RAM once | Zero-copy shared memory for any payload | `ContextMemoryManager.load_and_share()` (ndarray/text/bytes) + workers use `attach_and_reconstruct(metadata)` |
-| 3. Run sub-tasks in parallel | Heterogeneous actor swarm | `ActorHypervisor` with optional `worker_configs`; tasks carry `context_metadata`; routing by `model_type` |
-| 4. Merge results | Reducer / aggregator | Not implemented; you consume `result_queue` and merge by `task_id` / DAG dependencies |
+| 3. Route work to cheap executors | Local CPU-friendly tools or model-backed workers | `ActorHypervisor` routes by `tool_name` or `model_type` |
+| 4. Schedule DAG execution | Respect dependencies and unlock ready tasks | `DAGOrchestrator` submits ready tasks, waits for completions, and unlocks downstream work |
+| 5. Merge results | Reducer / aggregator | `DAGOrchestrator` includes a default reducer over leaf tasks and returns a structured execution report |
 
-So: **compiler**, **shared memory**, and **actor pool** are implemented and wired; **scheduler** (which tasks to send when, respecting DAG) and **reducer** (merge results into one answer) are the next layer you can add on top.
+So: the repo now has a minimal end-to-end path for running complex workflows as a DAG of **local tools** or specialized workers on CPU hardware. The next layer is richer tooling, retries, persistence, and real adapters in `src/models/`.
 
 ---
 
@@ -213,7 +235,7 @@ So: **compiler**, **shared memory**, and **actor pool** are implemented and wire
 ```
 docs/rfcs/       — RFCs for architectural changes
 src/compiler/    — Semantic Compiler (intent → DAG, LLM API, Pydantic)
-src/engine/      — Shared memory manager, actor pool, worker loop
+src/engine/      — Shared memory manager, actor pool, DAG orchestrator, local tool registry, worker loop
 src/models/      — (Reserved) model adapters (e.g. load SmolVLM in workers)
 tests/           — Tests for compiler and engine
 ```

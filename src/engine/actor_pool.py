@@ -2,10 +2,10 @@
 Actor Swarm: process-based heterogeneous worker pool for DAG execution with zero-copy shared memory.
 
 ActorHypervisor can run a single homogeneous pool or a heterogeneous set of pools
-(keyed by model_type). Each pool has its own task queue and run_inference_hook
-(e.g. Gemma-1B for text, SmolVLM for vision). Tasks carry context_metadata from
+(keyed by route key such as tool_name or model_type). Each pool has its own task
+queue and run_inference_hook. Tasks carry context_metadata from
 ContextMemoryManager; workers reconstruct payloads (ndarray, text, bytes) without
-copying. No threading for inference; no pickle for context payloads.
+copying. No threading for inference; no pickle for large context payloads.
 """
 
 from __future__ import annotations
@@ -24,6 +24,23 @@ SHUTDOWN_SENTINEL = "__ThreadSwarm_SHUTDOWN__"
 
 # Signature for inference hook: (context_payload, instruction, task_id, modality, model_type) -> result dict
 InferenceHook = Callable[[Any, str, str, str, str | None], dict[str, Any]]
+
+
+def _build_execution_context(task: dict[str, Any], payload: Any) -> Any:
+    """
+    Return either the raw payload (backward-compatible) or a structured execution
+    context for DAG orchestration.
+    """
+    if not task.get("context_envelope"):
+        return payload
+    return {
+        "payload": payload,
+        "dependency_results": task.get("dependency_results", {}),
+        "task_id": task.get("task_id", ""),
+        "modality": task.get("modality", "text"),
+        "tool_name": task.get("tool_name"),
+        "model_type": task.get("model_type"),
+    }
 
 
 def _default_inference(
@@ -77,15 +94,15 @@ def _worker_loop(
         task_id = task.get("task_id", "")
         instruction = task.get("instruction", "")
         modality = task.get("modality", "text")
-        task_model_type = task.get("model_type") or model_type
+        task_model_type = task.get("tool_name") or task.get("model_type") or model_type
         context_metadata = task.get("context_metadata") or task.get("image_metadata")
         shm_handle = None
         try:
             if context_metadata:
                 shm_handle, payload = attach_and_reconstruct(context_metadata)
-                result = inference(payload, instruction, task_id, modality, task_model_type)
+                result = inference(_build_execution_context(task, payload), instruction, task_id, modality, task_model_type)
             else:
-                result = inference(None, instruction, task_id, modality, task_model_type)
+                result = inference(_build_execution_context(task, None), instruction, task_id, modality, task_model_type)
             result_queue.put({"task_id": task_id, "result": result, "error": None})
         except Exception as e:
             logger.exception("Worker %s task %s failed: %s", worker_id, task_id, e)
@@ -101,7 +118,7 @@ def _worker_loop(
 
 
 class ModelActor:
-    """Single worker process for a given model type. Spawned by ActorHypervisor."""
+    """Single worker process for a given route key. Spawned by ActorHypervisor."""
 
     def __init__(self, process: Process, worker_id: int, model_type: str):
         self.process = process
@@ -121,10 +138,10 @@ class ModelActor:
 
 class ActorHypervisor:
     """
-    Heterogeneous actor pool: spawns one or more worker pools by model_type, each
+    Heterogeneous actor pool: spawns one or more worker pools by route key, each
     with its own task queue and inference hook. Tasks carry context_metadata
     (from ContextMemoryManager); workers reconstruct and run the hook. Single
-    result queue for all pools. Submit with task["model_type"] to route.
+    result queue for all pools. Submit with task["tool_name"] or task["model_type"].
     """
 
     def __init__(
@@ -137,7 +154,9 @@ class ActorHypervisor:
         Either (num_workers, run_inference_hook) for one homogeneous pool, or
         worker_configs for heterogeneous pools. worker_configs: list of
         {"model_type": str, "num_workers": int, "run_inference_hook": callable}.
-        Hooks must be picklable (e.g. module-level) on Windows.
+        The config key remains "model_type" for backward compatibility, but it
+        may represent any route key, including a local tool name. Hooks must be
+        picklable (e.g. module-level) on Windows.
         """
         self._result_queue: Queue | None = None
         self._started = False
@@ -154,6 +173,11 @@ class ActorHypervisor:
     @property
     def num_workers(self) -> int:
         return self._num_workers
+
+    @property
+    def started(self) -> bool:
+        """Whether worker processes have been started."""
+        return self._started
 
     def start(self) -> None:
         """Spawn all worker processes (one pool per worker_config). Idempotent."""
@@ -182,12 +206,13 @@ class ActorHypervisor:
     def submit(self, task: dict[str, Any], model_type: str | None = None) -> None:
         """
         Submit a sub-task. Task must have task_id, instruction; optionally
-        context_metadata (from ContextMemoryManager), modality, model_type.
-        Routes to the pool for task.get("model_type") or model_type or "default".
+        context_metadata (from ContextMemoryManager), modality, tool_name, model_type.
+        Routes to the pool for task.get("tool_name"), task.get("model_type"),
+        model_type, or "default".
         """
         if not self._started or self._result_queue is None:
             raise RuntimeError("ActorHypervisor not started; call start() first")
-        route = task.get("model_type") or model_type or "default"
+        route = task.get("tool_name") or task.get("model_type") or model_type or "default"
         for mt, tq, _actors, _ in self._pools:
             if mt == route:
                 tq.put(task)
