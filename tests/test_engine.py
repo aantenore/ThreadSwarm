@@ -3,13 +3,16 @@
 import numpy as np
 import pytest
 
+from src.compiler.parser import SubTask, TaskDAG
+from src.engine.actor_pool import ActorHypervisor, SHUTDOWN_SENTINEL
+from src.engine.orchestrator import DAGExecutionError, DAGOrchestrator
 from src.engine.shared_memory import (
     ContextMemoryManager,
     VisionMemoryManager,
     attach_and_reconstruct,
     load_image,
 )
-from src.engine.actor_pool import ActorHypervisor, SHUTDOWN_SENTINEL
+from src.engine.tool_registry import LocalToolRegistry
 
 
 # Module-level callables, picklable on Windows. New hook signature: (context, instruction, task_id, modality, model_type).
@@ -19,6 +22,51 @@ def _stub_inference(context, instruction, task_id, modality, model_type):
 
 def _check_shape_inference(context, instruction, task_id, modality, model_type):
     return {"shape": getattr(context, "shape", None), "task_id": task_id}
+
+
+def _local_tool_inference(context, instruction, task_id, modality, model_type):
+    payload = context["payload"]
+    dependency_results = context["dependency_results"]
+
+    if model_type == "normalize-text":
+        return {
+            "instruction": instruction,
+            "normalized": payload.strip().upper(),
+            "modality": modality,
+        }
+    if model_type == "summarize-text":
+        previous = dependency_results["task_1"]["normalized"]
+        return {
+            "instruction": instruction,
+            "summary": f"{previous} -> {instruction}",
+            "model_type": model_type,
+        }
+    if model_type == "finalize-report":
+        previous = dependency_results["task_2"]["summary"]
+        return {
+            "instruction": instruction,
+            "final": previous.lower(),
+        }
+    raise RuntimeError(f"Unexpected tool: {model_type}")
+
+
+def _branching_tool_inference(context, instruction, task_id, modality, model_type):
+    payload = context["payload"]
+    dependency_results = context["dependency_results"]
+
+    if model_type == "uppercase-root":
+        return {"base": payload.upper()}
+    if model_type == "left-branch":
+        return {"value": f"L:{dependency_results['root']['base']}"}
+    if model_type == "right-branch":
+        return {"value": f"R:{dependency_results['root']['base']}"}
+    raise RuntimeError(f"Unexpected tool: {model_type}")
+
+
+def _failing_local_tool(context, instruction, task_id, modality, model_type):
+    if model_type == "fail-tool":
+        raise RuntimeError("boom")
+    return {"task_id": task_id, "instruction": instruction}
 
 
 def test_context_memory_manager_ndarray():
@@ -91,3 +139,107 @@ def test_actor_pool_with_shared_memory_context():
         assert out["result"]["shape"] == (8, 8, 3)
 
     manager.close()
+
+
+def test_dag_orchestrator_runs_linear_workflow():
+    dag = TaskDAG(
+        tasks=[
+            SubTask(id="task_1", description="Normalize", instruction="Normalize input", dependencies=[], tool_name="normalize-text"),
+            SubTask(id="task_2", description="Summarize", instruction="Summarize normalized text", dependencies=["task_1"], tool_name="summarize-text"),
+            SubTask(id="task_3", description="Finalize", instruction="Finalize answer", dependencies=["task_2"], tool_name="finalize-report"),
+        ]
+    )
+
+    registry = LocalToolRegistry()
+    registry.register("normalize-text", _local_tool_inference, description="Normalize text")
+    registry.register("summarize-text", _local_tool_inference, description="Summarize normalized text")
+    registry.register("finalize-report", _local_tool_inference, description="Finalize report")
+
+    orchestrator = DAGOrchestrator(registry.create_hypervisor())
+    report = orchestrator.run(dag, context="  ciao swarm  ")
+
+    assert report.succeeded is True
+    assert report.execution_order == ["task_1", "task_2", "task_3"]
+    assert report.leaf_task_ids == ["task_3"]
+    assert report.task_results["task_2"].dependency_results == {
+        "task_1": {
+            "instruction": "Normalize input",
+            "normalized": "CIAO SWARM",
+            "modality": "text",
+        }
+    }
+    assert report.final_result == {
+        "instruction": "Finalize answer",
+        "final": "ciao swarm -> summarize normalized text",
+    }
+
+
+def test_dag_orchestrator_default_reducer_returns_leaf_mapping_for_branches():
+    dag = TaskDAG(
+        tasks=[
+            SubTask(id="root", description="Root", instruction="Root task", dependencies=[], tool_name="uppercase-root"),
+            SubTask(id="left", description="Left", instruction="Left branch", dependencies=["root"], tool_name="left-branch"),
+            SubTask(id="right", description="Right", instruction="Right branch", dependencies=["root"], tool_name="right-branch"),
+        ]
+    )
+
+    registry = LocalToolRegistry()
+    registry.register("uppercase-root", _branching_tool_inference, description="Uppercase root")
+    registry.register("left-branch", _branching_tool_inference, description="Build left branch")
+    registry.register("right-branch", _branching_tool_inference, description="Build right branch")
+
+    orchestrator = DAGOrchestrator(registry.create_hypervisor())
+    report = orchestrator.run(dag, context="edge")
+
+    assert report.succeeded is True
+    assert report.leaf_task_ids == ["left", "right"]
+    assert report.final_result == {
+        "left": {"value": "L:EDGE"},
+        "right": {"value": "R:EDGE"},
+    }
+
+
+def test_dag_orchestrator_returns_report_on_failure_when_fail_fast_disabled():
+    dag = TaskDAG(
+        tasks=[
+            SubTask(id="task_1", description="Fail", instruction="Explode", dependencies=[], tool_name="fail-tool"),
+            SubTask(id="task_2", description="Blocked", instruction="Never runs", dependencies=["task_1"], tool_name="safe-tool"),
+        ]
+    )
+
+    registry = LocalToolRegistry()
+    registry.register("fail-tool", _failing_local_tool)
+    registry.register("safe-tool", _failing_local_tool)
+
+    orchestrator = DAGOrchestrator(registry.create_hypervisor())
+    report = orchestrator.run(dag, context="ignored", fail_fast=False)
+
+    assert report.succeeded is False
+    assert report.failed_task_ids == ["task_1"]
+    assert report.blocked_task_ids == ["task_2"]
+    assert report.task_results["task_1"].status == "failed"
+    assert "boom" in (report.task_results["task_1"].error or "")
+    assert report.task_results["task_2"].status == "blocked"
+
+
+def test_dag_orchestrator_raises_with_report_when_fail_fast_enabled():
+    dag = TaskDAG(
+        tasks=[
+            SubTask(id="task_1", description="Fail", instruction="Explode", dependencies=[], tool_name="fail-tool"),
+            SubTask(id="task_2", description="Blocked", instruction="Never runs", dependencies=["task_1"], tool_name="safe-tool"),
+        ]
+    )
+
+    registry = LocalToolRegistry()
+    registry.register("fail-tool", _failing_local_tool)
+    registry.register("safe-tool", _failing_local_tool)
+
+    orchestrator = DAGOrchestrator(registry.create_hypervisor())
+
+    with pytest.raises(DAGExecutionError) as exc_info:
+        orchestrator.run(dag, context="ignored", fail_fast=True)
+
+    report = exc_info.value.report
+    assert report is not None
+    assert report.failed_task_ids == ["task_1"]
+    assert report.blocked_task_ids == ["task_2"]

@@ -50,6 +50,10 @@ class SubTask(BaseModel):
         default=MODALITY_TEXT,
         description="Required modality for this task: text, code, vision, audio, or multimodal",
     )
+    tool_name: str | None = Field(
+        default=None,
+        description="Optional local tool hint (e.g. keyword-extractor, file-search, regex-parser) for CPU-friendly execution",
+    )
     model_type: str | None = Field(
         default=None,
         description="Optional model type hint (e.g. gemma-1b, deepseek-r1-1.5b, smolvlm) for actor selection",
@@ -67,20 +71,67 @@ class TaskDAG(BaseModel):
                 return t
         return None
 
+    def validation_error(self) -> str | None:
+        """Return a descriptive validation error, or None when the DAG is valid."""
+        id_to_index: dict[str, int] = {}
+        dependency_graph: dict[str, list[str]] = {}
+
+        for index, task in enumerate(self.tasks):
+            if task.id in id_to_index:
+                return f"Duplicate task id: {task.id}"
+            id_to_index[task.id] = index
+            dependency_graph[task.id] = list(task.dependencies)
+
+        for task in self.tasks:
+            seen_dependencies: set[str] = set()
+            for dep in task.dependencies:
+                if dep in seen_dependencies:
+                    return f"Task {task.id} repeats dependency {dep}"
+                seen_dependencies.add(dep)
+
+                if dep == task.id:
+                    return f"Task {task.id} cannot depend on itself"
+                if dep not in id_to_index:
+                    return f"Task {task.id} references missing dependency {dep}"
+
+        visited: set[str] = set()
+        visiting: set[str] = set()
+        path: list[str] = []
+
+        def visit(task_id: str) -> str | None:
+            if task_id in visiting:
+                cycle_start = path.index(task_id)
+                cycle = path[cycle_start:] + [task_id]
+                return f"Cycle detected: {' -> '.join(cycle)}"
+            if task_id in visited:
+                return None
+
+            visiting.add(task_id)
+            path.append(task_id)
+            for dep in dependency_graph[task_id]:
+                error = visit(dep)
+                if error:
+                    return error
+            path.pop()
+            visiting.remove(task_id)
+            visited.add(task_id)
+            return None
+
+        for task in self.tasks:
+            error = visit(task.id)
+            if error:
+                return error
+
+        for index, task in enumerate(self.tasks):
+            for dep in task.dependencies:
+                if id_to_index[dep] >= index:
+                    return f"Task {task.id} depends on {dep}, but dependencies must appear earlier in the DAG"
+
+        return None
+
     def validate_dag(self) -> bool:
         """Ensure no cycles and all dependency IDs exist."""
-        ids = {t.id for t in self.tasks}
-        for t in self.tasks:
-            for dep in t.dependencies:
-                if dep not in ids:
-                    return False
-        seen: set[str] = set()
-        for t in self.tasks:
-            for dep in t.dependencies:
-                if dep not in seen:
-                    pass
-            seen.add(t.id)
-        return True
+        return self.validation_error() is None
 
 
 # ---------------------------------------------------------------------------
@@ -91,9 +142,9 @@ DEFAULT_SYSTEM_PROMPT = """You are a Semantic Compiler for a distributed multimo
 
 Rules:
 - Output ONLY a valid JSON array of task objects. No markdown, no explanation outside the JSON.
-- Each task must have: "id" (string, e.g. "task_1"), "description" (string), "instruction" (string, precise directive), "dependencies" (array of task ids that must complete first). Optionally: "payload_hint" (string), "modality" (one of: text, code, vision, audio, multimodal), "model_type" (string, e.g. "gemma-1b", "deepseek-r1-1.5b", "smolvlm" for actor selection).
+- Each task must have: "id" (string, e.g. "task_1"), "description" (string), "instruction" (string, precise directive), "dependencies" (array of task ids that must complete first). Optionally: "payload_hint" (string), "modality" (one of: text, code, vision, audio, multimodal), "tool_name" (string, for local CPU-friendly tools), "model_type" (string, e.g. "gemma-1b", "deepseek-r1-1.5b", "smolvlm" for actor selection).
 - IDs must be unique. Dependencies must reference earlier task IDs. No cycles.
-- Keep tasks atomic. Set "modality" so the orchestrator can assign the right model: use "text" for summarization/QA, "code" for logic/code analysis, "vision" for images/frames, "audio" for audio, "multimodal" when input mixes modalities.
+- Keep tasks atomic. Prefer local CPU-friendly tools when possible, and use "tool_name" to name them. Set "modality" so the orchestrator can assign the right executor: use "text" for summarization/QA, "code" for logic/code analysis, "vision" for images/frames, "audio" for audio, "multimodal" when input mixes modalities.
 - First tasks often prepare data (e.g. OCR logs, split document, extract frames). Later tasks depend on them and do the actual analysis or synthesis.
 """
 
@@ -152,8 +203,9 @@ class SemanticCompiler:
                 raise SemanticCompilationError("LLM returned empty content")
 
         dag = self._parse_llm_output(content)
-        if not dag.validate_dag():
-            raise SemanticCompilationError("DAG validation failed (missing deps or cycle)")
+        validation_error = dag.validation_error()
+        if validation_error:
+            raise SemanticCompilationError(f"DAG validation failed: {validation_error}")
         return dag
 
     def _parse_llm_output(self, content: str) -> TaskDAG:
