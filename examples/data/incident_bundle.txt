@@ -1,0 +1,19 @@
+INCIDENT REPORT
+Title: Checkout failures in EU region
+Services: api-gateway, payments, catalog
+
+CUSTOMER IMPACT
+- Customers in EU see HTTP 502 responses on checkout
+- Some retries succeed after 10 to 20 seconds
+
+LOG EXCERPTS
+2026-03-20T10:00:01Z ERROR api-gateway upstream payments timed out after 3000ms
+2026-03-20T10:00:02Z ERROR payments database connection pool exhausted
+2026-03-20T10:00:05Z WARN catalog cache miss spike
+2026-03-20T10:00:08Z ERROR payments database connection pool exhausted
+2026-03-20T10:00:10Z ERROR api-gateway upstream payments timed out after 3000ms
+
+NOTES
+- issue started right after rollout deploy-4812
+- rollback reduced the error rate but did not fully recover traffic
+- payments database CPU was above 90 percent during the incident
