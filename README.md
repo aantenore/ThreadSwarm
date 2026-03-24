@@ -84,11 +84,16 @@ Use `model_type` when a specialized worker or model is actually required.
 
 ## Practical Guide
 
-The most useful doc right now is the hands-on guide for local tool pipelines:
+Start here if you want something runnable right away:
+
+[docs/quickstart.md](docs/quickstart.md)
+
+Then go deeper with the hands-on guide for local tool pipelines:
 
 [docs/local-tool-pipelines.md](docs/local-tool-pipelines.md)
 
 It covers:
+- how to run the example demo
 - when to use `tool_name`
 - how to register local tools
 - how to build a small DAG
@@ -99,8 +104,12 @@ It covers:
 
 ```text
 docs/
+  quickstart.md             Fast path from install to runnable demo
   local-tool-pipelines.md   Practical guide for local tool DAGs
   rfcs/                     RFC folder for architectural proposals
+examples/
+  incident_triage.py        Runnable local-tool DAG example
+  data/                     Sample input bundles for examples
 src/
   compiler/                 Semantic compiler and DAG schema
   engine/                   Shared memory, actor pool, orchestrator, tool registry
