@@ -1,272 +1,150 @@
 # ThreadSwarm
 
-**Distributed multimodal AI on CPUs** — Natural-language intent is compiled into a heterogeneous DAG of micro-tasks and executed by a swarm of small models (text, code, vision, audio) on local CPUs, using zero-copy shared memory and the Actor model. No GPUs required.
+ThreadSwarm is a CPU-first runtime for breaking complex work into a DAG of small tasks that can run on almost any PC.
 
----
+The key idea is simple:
+- a semantic compiler turns a high-level request into a `TaskDAG`
+- large shared context lives once in RAM
+- each task is routed to a cheap local tool or, when needed, a specialized worker
+- an orchestrator respects dependencies and reduces leaf results into a final output
 
-## Manifesto: The Era of the Semantic Compiler and Distributed Multimodal AI on CPUs
+This repo is aimed at practical portability, not GPU-heavy orchestration. The happy path is: use local tools first, use models only when they actually add value.
 
-### The problem: the illusion of the monolithic model
+## Why
 
-When we want an AI to analyze a massive codebase, a 100-page report, or an hour-long video, the industry relies on a single giant model. That leads to:
+Complex tasks often get pushed into one giant model, which creates three problems:
+- hardware cost
+- latency
+- wasted intelligence for work that could be done by simpler tools
 
-- **Unsustainable hardware costs** — Enormous models need expensive GPU clusters; AI stays out of reach for local or edge deployment.
-- **Intrinsic slowness** — One model processes the entire request sequentially, limited by memory bandwidth.
-- **Cognitive waste** — Using a 70B model to extract a date from an invoice, summarize a log, or recognize a color is like using a supercomputer for 2+2.
+ThreadSwarm takes the opposite approach: decompose work into tiny steps and run those steps with the cheapest executor that can do the job on CPU hardware.
 
-We need to stop treating AI as an omniscient oracle and start treating it as a **distributed operating system** — the paradigm of **Software 3.0**.
-
-### The solution: Semantic Compiler + actor swarm
-
-1. **Semantic Compiler** — A lightweight LLM takes the user’s *intent* in natural language (e.g. “Analyze this codebase and the attached logs, then find the bug”) and produces a **Directed Acyclic Graph (DAG)** of microscopic sub-tasks. It does not do the heavy lifting; it *plans* execution. Each task can specify **modality** (text, code, vision, audio) and optional **model type** (e.g. Gemma-1B for text, DeepSeek-R1 for logic, SmolVLM for vision).
-2. **Actor swarm** — Small models run as **independent processes** on CPU cores. Each actor gets a micro-task and a **pointer to shared memory** (zero-copy: one copy of the context in RAM). They work in parallel; a reducer merges results into the final answer.
-
-So: **one compiler plans, many small models execute**. Heterogeneous workloads (text, code, images, audio) are supported; no single giant model; no GPUs if you have enough RAM and CPU cores.
-
-### High-level flow
+## Architecture
 
 ```mermaid
 flowchart LR
-    subgraph User
-        A[Natural language intent]
-    end
-    subgraph Compiler
-        B[Semantic Compiler]
-        C[DAG of SubTasks]
-    end
-    subgraph Execution
-        D[Actor 1]
-        E[Actor 2]
-        F[Actor N]
-        G[Reducer]
-    end
-    A --> B
-    B --> C
-    C --> D
+    A["User intent"] --> B["SemanticCompiler"]
+    B --> C["TaskDAG"]
+    D["Shared context in RAM"] --> E["DAGOrchestrator"]
     C --> E
-    C --> F
-    D --> G
-    E --> G
-    F --> G
+    E --> F["Local tool or worker pool"]
+    F --> G["Task results"]
+    G --> E
+    E --> H["Reduced final result"]
 ```
 
----
+The runtime is split into a few small pieces:
+- `src/compiler/`: planning only
+- `src/engine/shared_memory.py`: zero-copy context sharing for `ndarray`, `str`, and `bytes`
+- `src/engine/actor_pool.py`: process-based execution pool
+- `src/engine/orchestrator.py`: dependency-aware DAG execution
+- `src/engine/tool_registry.py`: registration of local CPU-friendly tools
 
-## Architecture overview
+## Current Capabilities
 
-```mermaid
-flowchart TB
-    subgraph Input
-        I1[User prompt]
-        I2[Context: text, code, image, audio]
-    end
-    subgraph "Semantic Compiler"
-        SC[LLM API\nOllama / LM Studio]
-        DAG[Heterogeneous DAG\nSubTask + modality/model_type]
-    end
-    subgraph "Zero-copy layer"
-        SHM[Shared memory\none copy of context]
-        META[Metadata only\npayload_type, name, size]
-    end
-    subgraph "Actor swarm"
-        Q1[Task queue]
-        W1[Worker 1]
-        W2[Worker 2]
-        W3[Worker N]
-        RQ[Result queue]
-    end
-    I1 --> SC
-    SC --> DAG
-    I2 --> SHM
-    SHM --> META
-    DAG --> Q1
-    META --> Q1
-    Q1 --> W1
-    Q1 --> W2
-    Q1 --> W3
-    W1 --> RQ
-    W2 --> RQ
-    W3 --> RQ
+What the repo can do today:
+- validate DAGs with clear errors for duplicate IDs, missing dependencies, future dependencies, self-dependencies, and cycles
+- store large context once in shared memory and reconstruct it in worker processes
+- route tasks by `tool_name` or `model_type`
+- execute a DAG end-to-end with dependency tracking
+- block downstream tasks after upstream failures
+- reduce leaf task results into a final result
+
+What is still intentionally lightweight:
+- real model adapters in `src/models/`
+- retries, persistence, and richer scheduling policies
+- a polished CLI or end-user app layer
+
+## Task Schema
+
+`SubTask` supports:
+- `id`
+- `description`
+- `instruction`
+- `dependencies`
+- `payload_hint`
+- `modality`
+- `tool_name`
+- `model_type`
+
+Use `tool_name` when a task should run on a local CPU-friendly executor.
+Use `model_type` when a specialized worker or model is actually required.
+
+## Execution Model
+
+1. `SemanticCompiler.compile(...)` produces a `TaskDAG`.
+2. `ContextMemoryManager.load_and_share(...)` stores the large payload once in RAM.
+3. `DAGOrchestrator.run(...)` submits every ready task.
+4. `ActorHypervisor` routes each task to the right pool by `tool_name` or `model_type`.
+5. Workers receive:
+   - the shared payload
+   - small `dependency_results`
+   - task metadata like `modality`, `tool_name`, and `model_type`
+6. The orchestrator waits for completions, unlocks dependents, and reduces leaf outputs.
+
+## Practical Guide
+
+The most useful doc right now is the hands-on guide for local tool pipelines:
+
+[docs/local-tool-pipelines.md](docs/local-tool-pipelines.md)
+
+It covers:
+- when to use `tool_name`
+- how to register local tools
+- how to build a small DAG
+- how to run it through the orchestrator
+- what the worker context looks like
+
+## Repository Structure
+
+```text
+docs/
+  local-tool-pipelines.md   Practical guide for local tool DAGs
+  rfcs/                     RFC folder for architectural proposals
+src/
+  compiler/                 Semantic compiler and DAG schema
+  engine/                   Shared memory, actor pool, orchestrator, tool registry
+  models/                   Optional model adapters
+tests/                      Compiler and engine tests
 ```
-
-- **Compiler**: intent → heterogeneous DAG (modality/model_type per task); no context data on the wire.
-- **Shared memory**: context (text, code, image, audio, bytes) lives once in RAM; workers get only metadata and attach to the same block.
-- **Workers**: each process takes a task + context_metadata, reconstructs payload (ndarray/str/bytes), runs inference, pushes a result.
-
----
-
-## Current implementation
-
-What exists today: the **core engine** (compiler + context memory + heterogeneous actor pool). Model adapters (load Gemma, DeepSeek-R1, SmolVLM in workers) are left to you or future modules in `src/models/`.
-
-### 1. Semantic Compiler (`src/compiler/`)
-
-- **Role**: Turn a **multimodal** user prompt into a **heterogeneous DAG** of SubTasks (no execution, only planning).
-- **How**: Calls an OpenAI-compatible API (e.g. **Ollama**). System prompt asks for a JSON array of tasks with `modality` (text, code, vision, audio, multimodal) and optional `model_type` (e.g. gemma-1b, deepseek-r1-1.5b, smolvlm) for actor selection.
-- **Output**: `TaskDAG` — ordered list of `SubTask`: `id`, `description`, `instruction`, `dependencies`, `payload_hint`, `modality`, `model_type`.
-
-**Example DAG** (heterogeneous):
-
-```mermaid
-flowchart LR
-    T1[task_1: OCR logs\nvision/smolvlm] --> T2[task_2: read file X\ncode]
-    T1 --> T3[task_3: summarize\ntext/gemma]
-    T2 --> T4[task_4: compare logic\ncode/deepseek]
-    T3 --> T5[task_5: merge]
-    T4 --> T5
-```
-
-**Code**: `SemanticCompiler.compile(prompt)` → `TaskDAG`. Each `SubTask` has `instruction`, `dependencies`, `modality`, `model_type` so the orchestrator can route tasks to the right actor pool.
-
----
-
-### 2. Zero-copy shared memory (`src/engine/shared_memory.py`)
-
-- **Role**: Store **any large context** (image, text, code, audio buffer, binary blob) **once** in RAM; workers receive only **metadata** and attach to the same block. No copying buffers between processes; **no pickle for context payloads**.
-- **How**:
-  - **ContextMemoryManager**: `load_and_share(payload)` accepts `np.ndarray`, `str`, or `bytes`. Allocates `multiprocessing.shared_memory.SharedMemory`, copies payload in, returns metadata: `name`, `size`, `payload_type` (ndarray | text | bytes), and type-specific fields (e.g. `shape`, `dtype` for ndarray; `encoding` for text).
-  - **attach_and_reconstruct(metadata)**: in each worker, attaches to the same block and returns `(shm, payload)` where payload is an ndarray view (zero-copy), decoded str, or bytes. Worker must keep `shm` and close it when done.
-  - **VisionMemoryManager** is a backward-compat alias for ContextMemoryManager.
-
-**Data flow**:
-
-```mermaid
-flowchart LR
-    subgraph Main process
-        PAY[Payload: image, text, code, bytes]
-        MM[ContextMemoryManager]
-        META[name, size, payload_type, ...]
-    end
-    subgraph "Shared RAM"
-        SHM[SharedMemory block]
-    end
-    subgraph Worker
-        ATT[attach_and_reconstruct]
-        OUT[ndarray / str / bytes]
-    end
-    PAY --> MM
-    MM --> SHM
-    MM --> META
-    META --> ATT
-    SHM -.-> ATT
-    ATT --> OUT
-```
-
-Only the small metadata dict goes over the task queue; the context stays in one place.
-
----
-
-### 3. Actor swarm (`src/engine/actor_pool.py`)
-
-- **Role**: Run **heterogeneous** worker pools: each pool is keyed by **model_type** (e.g. gemma-1b, smolvlm) and has its own task queue and **inference hook**. Tasks carry `context_metadata` (from ContextMemoryManager); workers reconstruct the payload and run the hook. Single shared result queue.
-- **How**:
-  - **ActorHypervisor**: either one homogeneous pool `(num_workers, run_inference_hook)` or **worker_configs**: list of `{model_type, num_workers, run_inference_hook}`. Each config gets its own task queue and N processes; all push to one result queue.
-  - **Task payload**: `task_id`, `instruction`, optional `context_metadata`, `modality`, `model_type`. Routing: `submit(task)` sends to the pool whose `model_type` matches `task["model_type"]` (or default).
-  - **Tool-friendly routing**: tasks may also declare a `tool_name`, so the same runtime can dispatch work to CPU-friendly local tools, not only model-specific workers.
-  - **Structured execution context**: orchestrated tasks can receive the shared `payload` plus small `dependency_results`, instead of having upstream artifacts hidden inside the instruction text.
-  - **run_inference_hook(context, instruction, task_id, modality, model_type)**: worker calls with reconstructed payload or with a structured execution context for orchestrated DAG runs. Must be **picklable** (e.g. module-level) on Windows.
-  - **Shutdown**: one sentinel per worker, then join. No threading for inference — only processes.
-
-**Process layout** (heterogeneous):
-
-```mermaid
-flowchart TB
-    subgraph Main
-        H[ActorHypervisor]
-        RQ[Result queue]
-    end
-    subgraph "Pool: gemma-1b"
-        TQ1[Task queue]
-        W1[Worker 1]
-        W2[Worker 2]
-    end
-    subgraph "Pool: smolvlm"
-        TQ2[Task queue]
-        W3[Worker 3]
-    end
-    H --> TQ1
-    H --> TQ2
-    TQ1 --> W1
-    TQ1 --> W2
-    TQ2 --> W3
-    W1 --> RQ
-    W2 --> RQ
-    W3 --> RQ
-RQ --> H
-```
-
----
-
-### 4. DAG orchestrator (`src/engine/orchestrator.py`)
-
-- **Role**: Execute a validated `TaskDAG` over local tools or model-backed workers.
-- **How**:
-  - Starts every task whose dependencies are satisfied.
-  - Tracks completions in the shared result queue and unlocks downstream tasks when ready.
-  - Passes large context through shared memory and small upstream outputs through structured dependency results.
-  - Returns a structured execution report plus a default reducer over leaf tasks.
-
-### 5. Local tool registry (`src/engine/tool_registry.py`)
-
-- **Role**: Make complex workflows runnable on almost any PC by registering plain Python tools as task executors.
-- **How**:
-  - Register a local tool name and its callable.
-  - Convert the registry to `ActorHypervisor` worker configs.
-  - Let the DAG route tasks by `tool_name`, keeping the execution model CPU-friendly and portable.
-
----
-
-## End-to-end (idea vs current code)
-
-| Step | Idea | Current implementation |
-|------|------|-------------------------|
-| 1. Intent → plan | Semantic Compiler produces heterogeneous DAG | `SemanticCompiler` → `TaskDAG` with `SubTask.modality` and `SubTask.model_type` |
-| 2. Context in RAM once | Zero-copy shared memory for any payload | `ContextMemoryManager.load_and_share()` (ndarray/text/bytes) + workers use `attach_and_reconstruct(metadata)` |
-| 3. Route work to cheap executors | Local CPU-friendly tools or model-backed workers | `ActorHypervisor` routes by `tool_name` or `model_type` |
-| 4. Schedule DAG execution | Respect dependencies and unlock ready tasks | `DAGOrchestrator` submits ready tasks, waits for completions, and unlocks downstream work |
-| 5. Merge results | Reducer / aggregator | `DAGOrchestrator` includes a default reducer over leaf tasks and returns a structured execution report |
-
-So: the repo now has a minimal end-to-end path for running complex workflows as a DAG of **local tools** or specialized workers on CPU hardware. The next layer is richer tooling, retries, persistence, and real adapters in `src/models/`.
-
----
-
-## Repository structure
-
-```
-docs/rfcs/       — RFCs for architectural changes
-src/compiler/    — Semantic Compiler (intent → DAG, LLM API, Pydantic)
-src/engine/      — Shared memory manager, actor pool, DAG orchestrator, local tool registry, worker loop
-src/models/      — (Reserved) model adapters (e.g. load SmolVLM in workers)
-tests/           — Tests for compiler and engine
-```
-
----
 
 ## Constraints
 
-- **No threading for AI inference** — use `multiprocessing` only (GIL).
-- **No pickle / standard IPC queues for large context payloads** — only shared memory + metadata on queues (text, code, images, audio, etc.).
-- **Windows**: `run_inference_hook` must be picklable (e.g. module-level function).
+- CPU-first execution
+- `multiprocessing`, not threads, for inference/execution workers
+- no large payload transfer over normal queues
+- Windows-compatible picklable worker hooks
 
----
+## Install
 
-## Engineering & contribution guidelines
-
-- **RFC process**: New architectural features require an RFC in `docs/rfcs/` (why, impact on CPU/memory) before code; code is accepted after human approval of the design.
-- **Spec-driven development**: Specs of the async engine are living documents; AI and human contributors must follow the Semantic Compiler / ContextMemoryManager / Actor swarm boundaries.
-- Use **type hints** and **Pydantic** for public APIs and task schemas.
-- Keep **src/compiler** for intent → DAG, **src/engine** for execution, **src/models** for model loaders.
-- Core engine: **no placeholders or mocks**; contributions should be production-ready.
-
----
-
-## Requirements
-
+Requirements:
 - Python 3.10+
-- See `requirements.txt` or `pyproject.toml` for dependencies (numpy, opencv-python-headless, pydantic, httpx; pytest for dev).
 
----
+Dependencies live in:
+- `requirements.txt`
+- `pyproject.toml`
 
-## License
+Typical setup:
 
-Open source; see repository license file.
+```bash
+pip install -r requirements.txt
+pip install -e .[dev]
+```
+
+Typical test run:
+
+```bash
+pytest -q
+```
+
+## Contribution Notes
+
+- Keep planning concerns in `src/compiler`
+- Keep execution concerns in `src/engine`
+- Prefer local tools when they can solve the task well
+- Add model-backed executors only where they materially improve outcomes
+- Write RFCs in `docs/rfcs/` for meaningful architectural changes
+
+## Status
+
+The core runtime is implemented and tested. The next useful layer is a richer library of local tools and a stronger story for mixed tool-plus-model workflows.
