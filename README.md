@@ -55,13 +55,14 @@ What the repo can do today:
 - export structured execution reports for debugging and evals
 - validate optional local tool input/output contracts with Pydantic schemas
 - retry transient task failures with per-task retry policies
+- mark slow attempts failed with per-task logical timeout policies
 - run JSON DAG files from the CLI with a built-in deterministic text toolkit
 - run packaged demos and DAG validation through the `threadswarm` CLI
 - configure compiler provider settings through typed environment-backed config
 
 What is still intentionally lightweight:
 - real model adapters in `src/models/`
-- retries, persistence, and richer scheduling policies
+- hard cancellation of a single in-flight worker, persistence, and richer scheduling policies
 
 ## Task Schema
 
@@ -76,6 +77,7 @@ What is still intentionally lightweight:
 - `model_type`
 - `retry_count`
 - `retry_delay_seconds`
+- `timeout_seconds`
 
 Use `tool_name` when a task should run on a local CPU-friendly executor.
 Use `model_type` when a specialized worker or model is actually required.
@@ -90,6 +92,7 @@ Use `model_type` when a specialized worker or model is actually required.
    - the shared payload
    - small `dependency_results`
    - task metadata like `modality`, `tool_name`, and `model_type`
+   - the current execution `attempt`
 6. The orchestrator waits for completions, unlocks dependents, and reduces leaf outputs.
 
 ## Practical Guide
@@ -205,6 +208,7 @@ THREADSWARM_LLM_TIMEOUT=60
 - Keep runtime behavior observable through structured execution reports
 - Keep local tools narrow and contract-backed when their outputs feed downstream tasks
 - Use task retry policies only for idempotent or safe-to-repeat work
+- Use task timeout policies for tools that can stall; keep deadlines above normal process startup and queue latency
 - Prefer local tools when they can solve the task well
 - Keep built-in toolkits small, deterministic, and easy to test
 - Add model-backed executors only where they materially improve outcomes

@@ -40,6 +40,7 @@ def _build_execution_context(task: dict[str, Any], payload: Any) -> Any:
         "modality": task.get("modality", "text"),
         "tool_name": task.get("tool_name"),
         "model_type": task.get("model_type"),
+        "attempt": task.get("attempt"),
     }
 
 
@@ -103,10 +104,10 @@ def _worker_loop(
                 result = inference(_build_execution_context(task, payload), instruction, task_id, modality, task_model_type)
             else:
                 result = inference(_build_execution_context(task, None), instruction, task_id, modality, task_model_type)
-            result_queue.put({"task_id": task_id, "result": result, "error": None})
+            result_queue.put({"task_id": task_id, "attempt": task.get("attempt"), "result": result, "error": None})
         except Exception as e:
             logger.exception("Worker %s task %s failed: %s", worker_id, task_id, e)
-            result_queue.put({"task_id": task_id, "result": None, "error": str(e)})
+            result_queue.put({"task_id": task_id, "attempt": task.get("attempt"), "result": None, "error": str(e)})
         finally:
             if shm_handle is not None:
                 try:

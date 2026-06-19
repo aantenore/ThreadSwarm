@@ -21,6 +21,7 @@ class TextToolInput(BaseModel):
     tool_name: str | None
     model_type: str | None
     route_key: str | None
+    attempt: int | None
 
 
 class NormalizeTextOutput(BaseModel):

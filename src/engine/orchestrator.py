@@ -43,6 +43,8 @@ class TaskExecutionRecord:
     attempts: int = 0
     max_attempts: int = 1
     retry_delay_seconds: float = 0.0
+    timeout_seconds: float | None = None
+    timed_out: bool = False
     attempt_errors: list[str] = field(default_factory=list)
 
     @property
@@ -77,6 +79,8 @@ class TaskExecutionRecord:
             "attempts": self.attempts,
             "max_attempts": self.max_attempts,
             "retry_delay_seconds": self.retry_delay_seconds,
+            "timeout_seconds": self.timeout_seconds,
+            "timed_out": self.timed_out,
             "attempt_errors": list(self.attempt_errors),
         }
         if include_results:
@@ -260,6 +264,7 @@ class DAGOrchestrator:
                 dependencies=list(task.dependencies),
                 max_attempts=task.retry_count + 1,
                 retry_delay_seconds=task.retry_delay_seconds,
+                timeout_seconds=task.timeout_seconds,
             )
             for task in dag.tasks
         }
@@ -269,12 +274,12 @@ class DAGOrchestrator:
             for dep in task.dependencies:
                 dependents[dep].append(task.id)
 
-        running_tasks = 0
         failures_seen = False
         retry_ready_at: dict[str, float] = {}
+        active_attempts: set[tuple[str, int]] = set()
+        attempt_deadlines: dict[tuple[str, int], float] = {}
 
         def submit_task(task_id: str) -> None:
-            nonlocal running_tasks
             task = task_lookup[task_id]
             record = task_results[task_id]
             if record.status != "pending":
@@ -283,6 +288,7 @@ class DAGOrchestrator:
             dependency_results = {dependency_id: task_results[dependency_id].result for dependency_id in task.dependencies}
             instruction = task.instruction
             record.attempts += 1
+            attempt = record.attempts
             self.actor_hypervisor.submit(
                 {
                     "task_id": task.id,
@@ -294,15 +300,36 @@ class DAGOrchestrator:
                     "tool_name": task.tool_name,
                     "model_type": task.model_type,
                     "payload_hint": task.payload_hint,
-                    "attempt": record.attempts,
+                    "attempt": attempt,
                 }
             )
+            submitted_at = time.monotonic()
             record.status = "running"
-            record.submitted_at = time.monotonic()
+            record.error = None
+            record.timed_out = False
+            record.submitted_at = submitted_at
             record.completed_at = None
             record.submitted_instruction = instruction
             record.dependency_results = dependency_results
-            running_tasks += 1
+            attempt_key = (task_id, attempt)
+            active_attempts.add(attempt_key)
+            if task.timeout_seconds is not None:
+                attempt_deadlines[attempt_key] = submitted_at + task.timeout_seconds
+
+        def fail_attempt(task_id: str, reason: str, *, timed_out: bool = False) -> None:
+            nonlocal failures_seen
+            record = task_results[task_id]
+            record.status = "failed"
+            record.error = reason
+            record.timed_out = timed_out
+            record.attempt_errors.append(reason)
+            if record.attempts <= task_lookup[task_id].retry_count:
+                schedule_retry(task_id, reason)
+                return
+            failures_seen = True
+            block_dependents(task_id, reason)
+            if fail_fast:
+                block_pending_tasks(f"Execution stopped after task {task_id} failed: {reason}")
 
         def schedule_retry(task_id: str, reason: str) -> None:
             task = task_lookup[task_id]
@@ -310,6 +337,27 @@ class DAGOrchestrator:
             record.status = "pending"
             record.error = reason
             retry_ready_at[task_id] = time.monotonic() + task.retry_delay_seconds
+
+        def expire_timed_out_attempts() -> None:
+            now = time.monotonic()
+            expired_attempts = [
+                attempt_key
+                for attempt_key, deadline in attempt_deadlines.items()
+                if deadline <= now and attempt_key in active_attempts
+            ]
+            for task_id, attempt in expired_attempts:
+                attempt_key = (task_id, attempt)
+                active_attempts.discard(attempt_key)
+                attempt_deadlines.pop(attempt_key, None)
+                record = task_results[task_id]
+                if record.status != "running" or record.attempts != attempt:
+                    continue
+                record.completed_at = now
+                fail_attempt(
+                    task_id,
+                    _format_timeout_error(task_id, attempt, task_lookup[task_id].timeout_seconds),
+                    timed_out=True,
+                )
 
         def submit_due_retries() -> None:
             now = time.monotonic()
@@ -360,6 +408,7 @@ class DAGOrchestrator:
 
             while True:
                 submit_due_retries()
+                expire_timed_out_attempts()
                 finished = sum(
                     1 for record in task_results.values() if record.status in {"completed", "failed", "blocked"}
                 )
@@ -370,7 +419,7 @@ class DAGOrchestrator:
                 if remaining_timeout is not None and remaining_timeout <= 0:
                     raise DAGExecutionError("DAG execution timed out")
 
-                if running_tasks == 0:
+                if not active_attempts:
                     if retry_ready_at:
                         wait_for_retry = max(0.0, min(retry_ready_at.values()) - time.monotonic())
                         if remaining_timeout is not None:
@@ -383,30 +432,30 @@ class DAGOrchestrator:
                     )
 
                 result = self.actor_hypervisor.get_result(
-                    timeout=min(0.5, remaining_timeout) if remaining_timeout is not None else 0.5
+                    timeout=self._next_wait_timeout(remaining_timeout, retry_ready_at, attempt_deadlines)
                 )
                 if result is None:
                     continue
 
-                running_tasks -= 1
                 task_id = result["task_id"]
                 record = task_results[task_id]
+                attempt = int(result.get("attempt") or record.attempts)
+                attempt_key = (task_id, attempt)
+                if attempt_key not in active_attempts:
+                    continue
+                active_attempts.remove(attempt_key)
+                attempt_deadlines.pop(attempt_key, None)
                 record.completed_at = time.monotonic()
+                if record.status != "running" or record.attempts != attempt:
+                    continue
 
                 if result.get("error"):
-                    record.status = "failed"
-                    record.error = result["error"]
-                    record.attempt_errors.append(result["error"])
-                    if record.attempts <= task_lookup[task_id].retry_count:
-                        schedule_retry(task_id, result["error"])
-                        continue
-                    failures_seen = True
-                    block_dependents(task_id, result["error"])
-                    if fail_fast:
-                        block_pending_tasks(f"Execution stopped after task {task_id} failed: {result['error']}")
+                    fail_attempt(task_id, result["error"])
                     continue
 
                 record.status = "completed"
+                record.error = None
+                record.timed_out = False
                 record.result = result.get("result")
                 execution_order.append(task_id)
 
@@ -467,3 +516,24 @@ class DAGOrchestrator:
         if timeout is None:
             return None
         return timeout - (time.monotonic() - started_at)
+
+    @staticmethod
+    def _next_wait_timeout(
+        remaining_timeout: float | None,
+        retry_ready_at: dict[str, float],
+        attempt_deadlines: dict[tuple[str, int], float],
+    ) -> float:
+        wait_timeout = 0.5
+        if remaining_timeout is not None:
+            wait_timeout = min(wait_timeout, max(0.0, remaining_timeout))
+        now = time.monotonic()
+        if retry_ready_at:
+            wait_timeout = min(wait_timeout, max(0.0, min(retry_ready_at.values()) - now))
+        if attempt_deadlines:
+            wait_timeout = min(wait_timeout, max(0.0, min(attempt_deadlines.values()) - now))
+        return wait_timeout
+
+
+def _format_timeout_error(task_id: str, attempt: int, timeout_seconds: float | None) -> str:
+    timeout_label = "unknown" if timeout_seconds is None else f"{timeout_seconds:g}"
+    return f"Task {task_id} attempt {attempt} timed out after {timeout_label} seconds"

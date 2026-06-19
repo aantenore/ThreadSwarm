@@ -45,6 +45,7 @@ For orchestrated DAG runs:
   - `modality`
   - `tool_name`
   - `model_type`
+  - `attempt`
 - the fifth positional argument still carries the route key used by the pool
   for backward compatibility
 
@@ -173,10 +174,17 @@ from pydantic import BaseModel, ConfigDict
 
 
 class NormalizeInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    payload: str
+    dependency_results: dict
     task_id: str
     instruction: str
     modality: str
-    payload: str
+    tool_name: str | None
+    model_type: str | None
+    route_key: str | None
+    attempt: int | None
 
 
 class NormalizeOutput(BaseModel):
@@ -224,7 +232,30 @@ Execution reports include:
 - `attempts`
 - `max_attempts`
 - `retry_delay_seconds`
+- `timeout_seconds`
+- `timed_out`
 - `attempt_errors`
+
+## Timeout Policies
+
+Tasks can set `timeout_seconds` to bound each execution attempt.
+
+```python
+SubTask(
+    id="task_1",
+    description="Parse report",
+    instruction="Parse and normalize the report",
+    dependencies=[],
+    tool_name="parse-report",
+    retry_count=1,
+    timeout_seconds=5.0,
+)
+```
+
+When an attempt exceeds its logical deadline, the orchestrator marks it failed,
+records the timeout in `attempt_errors`, and retries if `retry_count` allows it.
+Late results from an expired attempt are ignored by attempt id. This is a
+scheduler timeout, not hard cancellation of an already-running worker process.
 
 ## Dependency Results
 

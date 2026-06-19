@@ -49,6 +49,7 @@ class ToolExecutionInput:
     tool_name: str | None
     model_type: str | None
     route_key: str | None
+    attempt: int | None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -60,6 +61,7 @@ class ToolExecutionInput:
             "tool_name": self.tool_name,
             "model_type": self.model_type,
             "route_key": self.route_key,
+            "attempt": self.attempt,
         }
 
 
@@ -203,6 +205,7 @@ def _build_execution_input(
             tool_name=context.get("tool_name"),
             model_type=context.get("model_type"),
             route_key=route_key,
+            attempt=context.get("attempt"),
         )
     return ToolExecutionInput(
         payload=context,
@@ -213,6 +216,7 @@ def _build_execution_input(
         tool_name=None,
         model_type=None,
         route_key=route_key,
+        attempt=None,
     )
 
 

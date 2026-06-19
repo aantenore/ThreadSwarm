@@ -72,7 +72,7 @@ Must have:
 
 Should have:
 - retry policies per task (implemented);
-- timeout policies per task;
+- timeout policies per task (implemented as logical attempt deadlines);
 - JSON/YAML DAG loading from CLI (JSON implemented);
 - OpenAI-compatible model worker adapter;
 - golden-case eval fixtures for compiler and local-tool DAG behavior;
@@ -120,7 +120,13 @@ Tool registration now supports:
 Task execution now supports:
 - `retry_count`;
 - `retry_delay_seconds`;
+- `timeout_seconds`;
 - attempt counts and retry errors in execution reports.
+
+Timeout behavior is attempt-scoped: when a task exceeds its logical deadline,
+the orchestrator marks that attempt failed, can retry it, and ignores late
+results from expired attempts. Hard-killing only the specific in-flight worker is
+still out of scope for the current lightweight local pool.
 
 CLI execution now supports:
 - `threadswarm run-dag` for JSON DAG files;
