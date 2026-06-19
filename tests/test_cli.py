@@ -122,3 +122,51 @@ def test_run_dag_cli_executes_json_dag_with_text_toolkit(tmp_path, capsys):
     assert final_result["dependency_results"]["task_1"]["text"] == "HELLO LOCAL DAG"
     assert final_result["dependency_results"]["task_2"]["word_count"] == 3
     assert report_payload["summary"]["succeeded"] is True
+
+
+def test_eval_golden_cli_runs_packaged_fixture(capsys):
+    exit_code = main(["eval-golden", "evals/golden", "--json"])
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert exit_code == 0
+    assert payload["passed"] is True
+    assert payload["total_cases"] == 1
+    assert payload["cases"][0]["name"] == "text_pipeline"
+
+
+def test_eval_golden_cli_reports_failed_expectation(tmp_path, capsys):
+    case_file = tmp_path / "bad_case.json"
+    case_file.write_text(
+        json.dumps(
+            {
+                "name": "bad_text_pipeline",
+                "toolkit": "text",
+                "payload": "hello local dag",
+                "dag": [
+                    {
+                        "id": "task_1",
+                        "description": "Count",
+                        "instruction": "Count words",
+                        "dependencies": [],
+                        "tool_name": "word-count",
+                    }
+                ],
+                "expect": {
+                    "final_result": {
+                        "word_count": 99,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    exit_code = main(["eval-golden", str(case_file), "--json"])
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert exit_code == 1
+    assert payload["passed"] is False
+    assert payload["failed_cases"] == 1
+    assert "expected 99, got 3" in payload["cases"][0]["errors"][0]

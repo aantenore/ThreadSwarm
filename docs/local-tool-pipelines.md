@@ -355,6 +355,12 @@ Use `run-dag` for a hand-written DAG with the built-in text toolkit:
 threadswarm run-dag path/to/dag.json --payload "hello local dag" --json
 ```
 
+Use golden evals to regression-test deterministic DAG behavior:
+
+```bash
+threadswarm eval-golden evals/golden --json
+```
+
 Use the validator before handing a DAG to the orchestrator:
 
 ```bash
