@@ -181,6 +181,26 @@ Use this for small intermediate artifacts.
 Do not put large blobs there.
 Large shared inputs should stay in shared memory as the main `payload`.
 
+## Execution Reports
+
+Every orchestrated run returns a `DAGExecutionReport`. Use `report.to_dict()` when you need a JSON-friendly trace for debugging, evals, or CI snapshots.
+
+```python
+report = orchestrator.run(dag, context="  hello threadswarm  ")
+trace = report.to_dict(include_dependency_results=True)
+
+print(trace["summary"])
+print(trace["task_results"]["task_1"])
+```
+
+From the CLI:
+
+```bash
+threadswarm demo incident-triage --json --report-file reports/incident.json
+```
+
+The exported report includes task status, route metadata, execution order, durations, final result, and optional dependency results.
+
 ## Design Rules
 
 - Keep tasks atomic.

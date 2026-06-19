@@ -45,6 +45,38 @@ class TaskExecutionRecord:
     def succeeded(self) -> bool:
         return self.status == "completed" and self.error is None
 
+    @property
+    def duration_seconds(self) -> float | None:
+        if self.submitted_at is None or self.completed_at is None:
+            return None
+        return self.completed_at - self.submitted_at
+
+    def to_dict(
+        self,
+        *,
+        include_results: bool = True,
+        include_dependency_results: bool = False,
+    ) -> dict[str, Any]:
+        """Return a JSON-friendly execution record for tracing and debugging."""
+        payload: dict[str, Any] = {
+            "task_id": self.task_id,
+            "status": self.status,
+            "error": self.error,
+            "submitted_at": self.submitted_at,
+            "completed_at": self.completed_at,
+            "duration_seconds": self.duration_seconds,
+            "submitted_instruction": self.submitted_instruction,
+            "modality": self.modality,
+            "tool_name": self.tool_name,
+            "model_type": self.model_type,
+            "dependencies": list(self.dependencies),
+        }
+        if include_results:
+            payload["result"] = _json_safe(self.result)
+        if include_dependency_results:
+            payload["dependency_results"] = _json_safe(self.dependency_results)
+        return payload
+
 
 @dataclass(slots=True)
 class DAGExecutionReport:
@@ -69,6 +101,72 @@ class DAGExecutionReport:
     @property
     def blocked_task_ids(self) -> list[str]:
         return [task_id for task_id, record in self.task_results.items() if record.status == "blocked"]
+
+    @property
+    def duration_seconds(self) -> float:
+        return self.completed_at - self.started_at
+
+    def summary(self) -> dict[str, Any]:
+        """Return compact run metadata suitable for logs, dashboards, and evals."""
+        total_tasks = len(self.task_results)
+        completed = sum(1 for record in self.task_results.values() if record.status == "completed")
+        failed = len(self.failed_task_ids)
+        blocked = len(self.blocked_task_ids)
+        return {
+            "succeeded": self.succeeded,
+            "total_tasks": total_tasks,
+            "completed_tasks": completed,
+            "failed_tasks": failed,
+            "blocked_tasks": blocked,
+            "execution_order": list(self.execution_order),
+            "leaf_task_ids": list(self.leaf_task_ids),
+            "duration_seconds": self.duration_seconds,
+        }
+
+    def to_dict(
+        self,
+        *,
+        include_results: bool = True,
+        include_dependency_results: bool = False,
+        include_context_metadata: bool = False,
+    ) -> dict[str, Any]:
+        """Return a JSON-friendly report for trace export and post-run analysis."""
+        payload: dict[str, Any] = {
+            "summary": self.summary(),
+            "started_at": self.started_at,
+            "completed_at": self.completed_at,
+            "final_result": _json_safe(self.final_result) if include_results else None,
+            "task_results": {
+                task_id: record.to_dict(
+                    include_results=include_results,
+                    include_dependency_results=include_dependency_results,
+                )
+                for task_id, record in self.task_results.items()
+            },
+        }
+        if include_context_metadata:
+            payload["context_metadata"] = self.context_metadata
+        return payload
+
+
+def _json_safe(value: Any) -> Any:
+    """Convert common Python/scientific objects into JSON-safe structures."""
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        data = bytes(value)
+        return {
+            "type": "bytes",
+            "size": len(data),
+            "preview": data[:120].decode("utf-8", errors="replace"),
+        }
+    if hasattr(value, "tolist"):
+        return _json_safe(value.tolist())
+    return repr(value)
 
 
 class DAGExecutionError(RuntimeError):

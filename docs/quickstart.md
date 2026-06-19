@@ -71,6 +71,12 @@ Or print the final payload as JSON:
 threadswarm demo incident-triage --json
 ```
 
+Or write the full execution report for debugging/evals:
+
+```bash
+threadswarm demo incident-triage --json --report-file reports/incident.json
+```
+
 You can also validate a DAG JSON file before wiring execution:
 
 ```bash
@@ -90,5 +96,6 @@ The basic recipe is:
 ## Next Reads
 
 - `docs/local-tool-pipelines.md` for the deeper design guide
+- `docs/product-strategy.md` for positioning and capability roadmap
 - `.env.example` for configurable compiler provider settings
 - `tests/test_engine.py` for compact execution examples

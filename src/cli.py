@@ -12,6 +12,7 @@ from typing import Sequence
 from src.compiler import SemanticCompilationError, SemanticCompiler, parse_task_dag_json
 from src.config import ThreadSwarmConfig, ThreadSwarmConfigError
 from src.demos.incident_triage import load_bundle_text, run_demo
+from src.engine import DAGExecutionReport
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -34,6 +35,7 @@ def build_parser() -> argparse.ArgumentParser:
     incident_parser = demo_subparsers.add_parser("incident-triage", help="Run the local-tool incident triage demo.")
     incident_parser.add_argument("--input-file", type=Path, default=None, help="Path to an incident bundle text file.")
     incident_parser.add_argument("--json", action="store_true", help="Print final report payload as JSON.")
+    incident_parser.add_argument("--report-file", type=Path, help="Write the full execution report JSON to this path.")
     incident_parser.set_defaults(handler=_handle_incident_triage_demo)
 
     return parser
@@ -100,6 +102,8 @@ def _handle_compile(args: argparse.Namespace) -> int:
 
 def _handle_incident_triage_demo(args: argparse.Namespace) -> int:
     report = run_demo(load_bundle_text(args.input_file))
+    if args.report_file:
+        _write_report_file(report, args.report_file)
     print("Execution order:", report.execution_order)
     print()
     if args.json:
@@ -107,6 +111,14 @@ def _handle_incident_triage_demo(args: argparse.Namespace) -> int:
     else:
         print(report.final_result["report_markdown"])
     return 0
+
+
+def _write_report_file(report: DAGExecutionReport, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(report.to_dict(include_dependency_results=True), indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
 
 
 if __name__ == "__main__":

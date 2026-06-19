@@ -69,6 +69,14 @@ def _failing_local_tool(context, instruction, task_id, modality, model_type):
     return {"task_id": task_id, "instruction": instruction}
 
 
+def _binary_result_tool(context, instruction, task_id, modality, model_type):
+    return {
+        "payload": b"hello bytes",
+        "shape": (2, 3),
+        "array_like": np.array([1, 2, 3], dtype=np.int64),
+    }
+
+
 def test_context_memory_manager_ndarray():
     """ContextMemoryManager: ndarray roundtrip (e.g. image/audio)."""
     manager = ContextMemoryManager(name_prefix="test_")
@@ -173,6 +181,16 @@ def test_dag_orchestrator_runs_linear_workflow():
         "final": "ciao swarm -> summarize normalized text",
     }
 
+    exported = report.to_dict(include_dependency_results=True)
+    assert exported["summary"]["succeeded"] is True
+    assert exported["summary"]["total_tasks"] == 3
+    assert exported["summary"]["completed_tasks"] == 3
+    assert exported["summary"]["failed_tasks"] == 0
+    assert exported["summary"]["blocked_tasks"] == 0
+    assert exported["summary"]["duration_seconds"] >= 0
+    assert exported["task_results"]["task_2"]["tool_name"] == "summarize-text"
+    assert exported["task_results"]["task_2"]["dependency_results"]["task_1"]["normalized"] == "CIAO SWARM"
+
 
 def test_dag_orchestrator_default_reducer_returns_leaf_mapping_for_branches():
     dag = TaskDAG(
@@ -197,6 +215,29 @@ def test_dag_orchestrator_default_reducer_returns_leaf_mapping_for_branches():
         "left": {"value": "L:EDGE"},
         "right": {"value": "R:EDGE"},
     }
+
+
+def test_execution_report_export_is_json_safe_for_common_payloads():
+    dag = TaskDAG(
+        tasks=[
+            SubTask(id="task_1", description="Binary", instruction="Return binary result", dependencies=[], tool_name="binary-tool"),
+        ]
+    )
+
+    registry = LocalToolRegistry()
+    registry.register("binary-tool", _binary_result_tool)
+
+    orchestrator = DAGOrchestrator(registry.create_hypervisor())
+    report = orchestrator.run(dag, context="ignored")
+    exported = report.to_dict()
+
+    assert exported["final_result"]["payload"] == {
+        "type": "bytes",
+        "size": 11,
+        "preview": "hello bytes",
+    }
+    assert exported["final_result"]["shape"] == [2, 3]
+    assert exported["final_result"]["array_like"] == [1, 2, 3]
 
 
 def test_dag_orchestrator_returns_report_on_failure_when_fail_fast_disabled():
