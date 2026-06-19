@@ -53,6 +53,16 @@ def test_parse_llm_output_with_modality():
     assert dag.tasks[1].modality == "text" and dag.tasks[1].tool_name == "keyword-extractor" and dag.tasks[1].model_type == "gemma-1b"
 
 
+def test_parse_llm_output_with_retry_policy():
+    compiler = SemanticCompiler(base_url="http://localhost:11434/v1", model="dummy")
+    raw = '''[
+        {"id": "t1", "description": "Fetch", "instruction": "Fetch data", "dependencies": [], "tool_name": "fetch-local", "retry_count": 2, "retry_delay_seconds": 0.25}
+    ]'''
+    dag = compiler._parse_llm_output(raw)
+    assert dag.tasks[0].retry_count == 2
+    assert dag.tasks[0].retry_delay_seconds == 0.25
+
+
 def test_parse_llm_output_invalid_raises():
     compiler = SemanticCompiler(base_url="http://localhost:11434/v1", model="dummy")
     with pytest.raises(SemanticCompilationError):

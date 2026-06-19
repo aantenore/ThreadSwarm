@@ -54,6 +54,7 @@ What the repo can do today:
 - reduce leaf task results into a final result
 - export structured execution reports for debugging and evals
 - validate optional local tool input/output contracts with Pydantic schemas
+- retry transient task failures with per-task retry policies
 - run packaged demos and DAG validation through the `threadswarm` CLI
 - configure compiler provider settings through typed environment-backed config
 
@@ -72,6 +73,8 @@ What is still intentionally lightweight:
 - `modality`
 - `tool_name`
 - `model_type`
+- `retry_count`
+- `retry_delay_seconds`
 
 Use `tool_name` when a task should run on a local CPU-friendly executor.
 Use `model_type` when a specialized worker or model is actually required.
@@ -193,6 +196,7 @@ THREADSWARM_LLM_TIMEOUT=60
 - Keep machine/provider variation in `src/config.py` and `.env.example`
 - Keep runtime behavior observable through structured execution reports
 - Keep local tools narrow and contract-backed when their outputs feed downstream tasks
+- Use task retry policies only for idempotent or safe-to-repeat work
 - Prefer local tools when they can solve the task well
 - Add model-backed executors only where they materially improve outcomes
 - Write RFCs in `docs/rfcs/` for meaningful architectural changes

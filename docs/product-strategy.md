@@ -71,7 +71,7 @@ Must have:
 - provider adapters kept behind configuration.
 
 Should have:
-- retry policies per task;
+- retry policies per task (implemented);
 - timeout policies per task;
 - JSON/YAML DAG loading from CLI;
 - OpenAI-compatible model worker adapter;
@@ -116,6 +116,11 @@ Tool registration now supports:
 - risk class and side-effect class metadata;
 - result size limits;
 - contract metadata export through `LocalToolRegistry.contracts()`.
+
+Task execution now supports:
+- `retry_count`;
+- `retry_delay_seconds`;
+- attempt counts and retry errors in execution reports.
 
 ## Build-Vs-Buy Recommendation
 

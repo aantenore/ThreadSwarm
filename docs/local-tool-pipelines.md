@@ -202,6 +202,30 @@ registry.register(
 
 Use contracts for tools whose output feeds downstream tasks. Contract failures are returned as task failures, which keeps regression tests and execution reports honest.
 
+## Retry Policies
+
+Tasks can retry transient failures by setting `retry_count` and optional `retry_delay_seconds`.
+
+```python
+SubTask(
+    id="task_1",
+    description="Fetch local cache",
+    instruction="Fetch and normalize cache entry",
+    dependencies=[],
+    tool_name="fetch-cache",
+    retry_count=2,
+    retry_delay_seconds=0.1,
+)
+```
+
+Use retries for idempotent or safe-to-repeat work. Avoid retries for non-idempotent side effects unless the tool has its own idempotency key or commit guard.
+
+Execution reports include:
+- `attempts`
+- `max_attempts`
+- `retry_delay_seconds`
+- `attempt_errors`
+
 ## Dependency Results
 
 Every downstream task receives a small `dependency_results` mapping.

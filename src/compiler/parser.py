@@ -60,6 +60,16 @@ class SubTask(BaseModel):
         default=None,
         description="Optional model type hint (e.g. gemma-1b, deepseek-r1-1.5b, smolvlm) for actor selection",
     )
+    retry_count: int = Field(
+        default=0,
+        ge=0,
+        description="Number of retries after the first failed execution attempt",
+    )
+    retry_delay_seconds: float = Field(
+        default=0.0,
+        ge=0,
+        description="Delay before retrying a failed task",
+    )
 
 
 class TaskDAG(BaseModel):
@@ -145,6 +155,7 @@ DEFAULT_SYSTEM_PROMPT = """You are a Semantic Compiler for a distributed multimo
 Rules:
 - Output ONLY a valid JSON array of task objects. No markdown, no explanation outside the JSON.
 - Each task must have: "id" (string, e.g. "task_1"), "description" (string), "instruction" (string, precise directive), "dependencies" (array of task ids that must complete first). Optionally: "payload_hint" (string), "modality" (one of: text, code, vision, audio, multimodal), "tool_name" (string, for local CPU-friendly tools), "model_type" (string, e.g. "gemma-1b", "deepseek-r1-1.5b", "smolvlm" for actor selection).
+- Optional reliability fields: "retry_count" (integer >= 0) and "retry_delay_seconds" (number >= 0).
 - IDs must be unique. Dependencies must reference earlier task IDs. No cycles.
 - Keep tasks atomic. Prefer local CPU-friendly tools when possible, and use "tool_name" to name them. Set "modality" so the orchestrator can assign the right executor: use "text" for summarization/QA, "code" for logic/code analysis, "vision" for images/frames, "audio" for audio, "multimodal" when input mixes modalities.
 - First tasks often prepare data (e.g. OCR logs, split document, extract frames). Later tasks depend on them and do the actual analysis or synthesis.
