@@ -73,7 +73,7 @@ Must have:
 Should have:
 - retry policies per task (implemented);
 - timeout policies per task;
-- JSON/YAML DAG loading from CLI;
+- JSON/YAML DAG loading from CLI (JSON implemented);
 - OpenAI-compatible model worker adapter;
 - golden-case eval fixtures for compiler and local-tool DAG behavior;
 - optional OpenTelemetry or LangSmith/OpenInference adapter.
@@ -121,6 +121,12 @@ Task execution now supports:
 - `retry_count`;
 - `retry_delay_seconds`;
 - attempt counts and retry errors in execution reports.
+
+CLI execution now supports:
+- `threadswarm run-dag` for JSON DAG files;
+- a built-in deterministic `text` toolkit;
+- payloads from `--payload` or `--input-file`;
+- report export through `--report-file`.
 
 ## Build-Vs-Buy Recommendation
 

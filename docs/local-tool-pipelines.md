@@ -291,6 +291,12 @@ Use the CLI to smoke test the packaged workflow:
 threadswarm demo incident-triage --json
 ```
 
+Use `run-dag` for a hand-written DAG with the built-in text toolkit:
+
+```bash
+threadswarm run-dag path/to/dag.json --payload "hello local dag" --json
+```
+
 Use the validator before handing a DAG to the orchestrator:
 
 ```bash
