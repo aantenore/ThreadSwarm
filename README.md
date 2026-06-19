@@ -56,12 +56,13 @@ What the repo can do today:
 - validate optional local tool input/output contracts with Pydantic schemas
 - retry transient task failures with per-task retry policies
 - mark slow attempts failed with per-task logical timeout policies
+- create OpenAI-compatible model worker configs for `model_type` tasks
 - run JSON DAG files from the CLI with a built-in deterministic text toolkit
 - run packaged demos and DAG validation through the `threadswarm` CLI
 - configure compiler provider settings through typed environment-backed config
 
 What is still intentionally lightweight:
-- real model adapters in `src/models/`
+- provider-specific hosted tool integrations in `src/models/`
 - hard cancellation of a single in-flight worker, persistence, and richer scheduling policies
 
 ## Task Schema
@@ -132,7 +133,7 @@ src/
   compiler/                 Semantic compiler and DAG schema
   demos/                    Packaged demos and sample data
   engine/                   Shared memory, actor pool, orchestrator, tool registry
-  models/                   Optional model adapters
+  models/                   Optional model adapters, including OpenAI-compatible workers
   tools/                    Built-in local toolkits
 tests/                      Compiler and engine tests
 ```

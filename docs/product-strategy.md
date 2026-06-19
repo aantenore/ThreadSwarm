@@ -74,7 +74,7 @@ Should have:
 - retry policies per task (implemented);
 - timeout policies per task (implemented as logical attempt deadlines);
 - JSON/YAML DAG loading from CLI (JSON implemented);
-- OpenAI-compatible model worker adapter;
+- OpenAI-compatible model worker adapter (implemented);
 - golden-case eval fixtures for compiler and local-tool DAG behavior;
 - optional OpenTelemetry or LangSmith/OpenInference adapter.
 
@@ -133,6 +133,12 @@ CLI execution now supports:
 - a built-in deterministic `text` toolkit;
 - payloads from `--payload` or `--input-file`;
 - report export through `--report-file`.
+
+Model-backed execution now supports:
+- `OpenAICompatibleWorker`;
+- construction from `ThreadSwarmConfig`;
+- `to_worker_config()` for `ActorHypervisor`;
+- compact JSON task envelopes with payload previews and dependency results.
 
 ## Build-Vs-Buy Recommendation
 
