@@ -52,6 +52,7 @@ What the repo can do today:
 - execute a DAG end-to-end with dependency tracking
 - block downstream tasks after upstream failures
 - reduce leaf task results into a final result
+- export structured execution reports for debugging and evals
 - run packaged demos and DAG validation through the `threadswarm` CLI
 - configure compiler provider settings through typed environment-backed config
 
@@ -95,6 +96,10 @@ Start here if you want something runnable right away:
 Then go deeper with the hands-on guide for local tool pipelines:
 
 [docs/local-tool-pipelines.md](docs/local-tool-pipelines.md)
+
+For product positioning and the capability roadmap:
+
+[docs/product-strategy.md](docs/product-strategy.md)
 
 It covers:
 - how to run the example demo
@@ -160,6 +165,12 @@ Run the packaged demo:
 threadswarm demo incident-triage
 ```
 
+Export a full execution report:
+
+```bash
+threadswarm demo incident-triage --json --report-file reports/incident.json
+```
+
 Validate a DAG JSON file:
 
 ```bash
@@ -179,6 +190,7 @@ THREADSWARM_LLM_TIMEOUT=60
 - Keep planning concerns in `src/compiler`
 - Keep execution concerns in `src/engine`
 - Keep machine/provider variation in `src/config.py` and `.env.example`
+- Keep runtime behavior observable through structured execution reports
 - Prefer local tools when they can solve the task well
 - Add model-backed executors only where they materially improve outcomes
 - Write RFCs in `docs/rfcs/` for meaningful architectural changes

@@ -54,3 +54,18 @@ def test_validate_dag_cli_reports_invalid_dependencies(tmp_path, capsys):
     captured = capsys.readouterr()
     assert exit_code == 1
     assert "references missing dependency missing" in captured.err
+
+
+def test_demo_cli_writes_execution_report(tmp_path, capsys):
+    report_file = tmp_path / "reports" / "incident.json"
+
+    exit_code = main(["demo", "incident-triage", "--json", "--report-file", str(report_file)])
+
+    captured = capsys.readouterr()
+    report_payload = json.loads(report_file.read_text(encoding="utf-8"))
+    assert exit_code == 0
+    assert "Incident Triage Report" in captured.out
+    assert report_payload["summary"]["succeeded"] is True
+    assert report_payload["summary"]["total_tasks"] == 5
+    assert report_payload["task_results"]["task_5"]["tool_name"] == "build-incident-report"
+    assert "task_4" in report_payload["task_results"]["task_5"]["dependency_results"]
