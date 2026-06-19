@@ -6,16 +6,16 @@ import numpy as np
 import pytest
 from pydantic import BaseModel, ConfigDict
 
-from src.compiler.parser import SubTask, TaskDAG
-from src.engine.actor_pool import ActorHypervisor, SHUTDOWN_SENTINEL
-from src.engine.orchestrator import DAGExecutionError, DAGOrchestrator
-from src.engine.shared_memory import (
+from threadswarm.compiler.parser import SubTask, TaskDAG
+from threadswarm.engine.actor_pool import ActorHypervisor, SHUTDOWN_SENTINEL
+from threadswarm.engine.orchestrator import DAGExecutionError, DAGOrchestrator
+from threadswarm.engine.shared_memory import (
     ContextMemoryManager,
     VisionMemoryManager,
     attach_and_reconstruct,
     load_image,
 )
-from src.engine.tool_registry import LocalToolRegistry
+from threadswarm.engine.tool_registry import LocalToolRegistry
 
 
 class TextToolInput(BaseModel):

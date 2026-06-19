@@ -1,6 +1,6 @@
 import pytest
 
-from src.config import ThreadSwarmConfig, ThreadSwarmConfigError
+from threadswarm.config import ThreadSwarmConfig, ThreadSwarmConfigError
 
 
 def test_config_from_env_defaults():

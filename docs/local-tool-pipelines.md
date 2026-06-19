@@ -61,8 +61,8 @@ The example below builds a tiny text workflow:
 - finalize a report
 
 ```python
-from src.compiler.parser import SubTask, TaskDAG
-from src.engine import DAGOrchestrator, LocalToolRegistry
+from threadswarm.compiler import SubTask, TaskDAG
+from threadswarm.engine import DAGOrchestrator, LocalToolRegistry
 
 
 def text_tool(context, instruction, task_id, modality, route_key):
@@ -171,9 +171,9 @@ ThreadSwarm includes a small OpenAI-compatible chat-completions worker for tasks
 that use `model_type`.
 
 ```python
-from src.config import ThreadSwarmConfig
-from src.engine import ActorHypervisor, DAGOrchestrator
-from src.models import OpenAICompatibleWorker
+from threadswarm.config import ThreadSwarmConfig
+from threadswarm.engine import ActorHypervisor, DAGOrchestrator
+from threadswarm.models import OpenAICompatibleWorker
 
 config = ThreadSwarmConfig.from_env()
 model_worker = OpenAICompatibleWorker.from_config(config)

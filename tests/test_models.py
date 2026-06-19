@@ -2,9 +2,9 @@ import json
 
 import pytest
 
-from src.config import ThreadSwarmConfig
-from src.models import OpenAICompatibleWorker, build_openai_compatible_worker
-from src.models import openai_compatible
+from threadswarm.config import ThreadSwarmConfig
+from threadswarm.models import OpenAICompatibleWorker, build_openai_compatible_worker
+from threadswarm.models import openai_compatible
 
 
 class _FakeResponse:

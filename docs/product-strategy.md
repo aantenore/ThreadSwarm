@@ -83,7 +83,7 @@ Could have:
 - MCP adapter for tool discovery;
 - visual DAG export;
 - Ray/Prefect bridge for users who outgrow the local runtime;
-- package rename from `src.*` imports to a public `threadswarm.*` namespace.
+- physical package move away from internal `src.*` modules.
 
 ## Implementation Decision
 
@@ -145,6 +145,11 @@ Golden evals now support:
 - deterministic local toolkit execution;
 - subset comparison against report JSON;
 - `threadswarm eval-golden` for local regression checks.
+
+Packaging now supports:
+- public `threadswarm.*` imports;
+- `threadswarm.cli:main` as the console entrypoint;
+- compatibility wrappers over the current internal `src.*` modules.
 
 ## Build-Vs-Buy Recommendation
 

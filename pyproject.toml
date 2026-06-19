@@ -19,11 +19,11 @@ dependencies = [
 dev = ["pytest>=7.0.0"]
 
 [project.scripts]
-threadswarm = "src.cli:main"
+threadswarm = "threadswarm.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["src*"]
+include = ["src*", "threadswarm*"]
 
 [tool.setuptools.package-data]
 "src.demos" = ["data/*.txt"]
