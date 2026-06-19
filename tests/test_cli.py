@@ -1,6 +1,6 @@
 import json
 
-from src.cli import main
+from threadswarm.cli import main
 
 
 def test_validate_dag_cli_success(tmp_path, capsys):

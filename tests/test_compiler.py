@@ -2,7 +2,7 @@
 
 import pytest
 
-from src.compiler.parser import (
+from threadswarm.compiler.parser import (
     SemanticCompiler,
     SemanticCompilationError,
     SubTask,

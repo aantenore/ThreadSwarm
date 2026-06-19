@@ -16,9 +16,9 @@ Use `.env.example` as the canonical list of supported keys.
 In code:
 
 ```python
-from src.compiler import SemanticCompiler
-from src.config import ThreadSwarmConfig
-from src.models import OpenAICompatibleWorker
+from threadswarm.compiler import SemanticCompiler
+from threadswarm.config import ThreadSwarmConfig
+from threadswarm.models import OpenAICompatibleWorker
 
 config = ThreadSwarmConfig.from_env()
 compiler = SemanticCompiler.from_config(config)

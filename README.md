@@ -34,8 +34,9 @@ flowchart LR
 ```
 
 The runtime is split into a few small pieces:
-- `src/config.py`: typed runtime configuration for provider/model settings
-- `src/cli.py`: command line entrypoint for validation, compilation, and demos
+- `threadswarm/`: public package namespace
+- `src/config.py`: internal typed runtime configuration for provider/model settings
+- `src/cli.py`: internal command line implementation for validation, compilation, and demos
 - `src/compiler/`: planning only
 - `src/demos/`: packaged runnable demos and sample data
 - `src/engine/shared_memory.py`: zero-copy context sharing for `ndarray`, `str`, and `bytes`
@@ -138,6 +139,7 @@ src/
   engine/                   Shared memory, actor pool, orchestrator, tool registry
   models/                   Optional model adapters, including OpenAI-compatible workers
   tools/                    Built-in local toolkits
+threadswarm/                Public import namespace wrapping the runtime
 tests/                      Compiler and engine tests
 ```
 
