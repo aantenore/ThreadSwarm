@@ -13,6 +13,7 @@ from src.compiler import SemanticCompilationError, SemanticCompiler, parse_task_
 from src.config import ThreadSwarmConfig, ThreadSwarmConfigError
 from src.demos.incident_triage import load_bundle_text, run_demo
 from src.engine import DAGExecutionReport, DAGOrchestrator
+from src.evals import evaluate_golden_path
 from src.tools import build_text_tool_registry
 
 
@@ -40,6 +41,17 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--report-file", type=Path, help="Write the full execution report JSON to this path.")
     run_parser.add_argument("--no-fail-fast", action="store_true", help="Return a report instead of raising on task failure.")
     run_parser.set_defaults(handler=_handle_run_dag)
+
+    eval_parser = subparsers.add_parser("eval-golden", help="Run deterministic golden eval JSON cases.")
+    eval_parser.add_argument(
+        "path",
+        type=Path,
+        nargs="?",
+        default=Path("evals/golden"),
+        help="Golden eval JSON file or directory. Defaults to evals/golden.",
+    )
+    eval_parser.add_argument("--json", action="store_true", help="Print eval results as JSON.")
+    eval_parser.set_defaults(handler=_handle_eval_golden)
 
     demo_parser = subparsers.add_parser("demo", help="Run packaged demos.")
     demo_subparsers = demo_parser.add_subparsers(dest="demo_name", required=True)
@@ -131,6 +143,27 @@ def _handle_run_dag(args: argparse.Namespace) -> int:
     else:
         print(report.final_result)
     return 0
+
+
+def _handle_eval_golden(args: argparse.Namespace) -> int:
+    results = evaluate_golden_path(args.path)
+    passed = all(result.passed for result in results)
+    payload = {
+        "passed": passed,
+        "total_cases": len(results),
+        "failed_cases": sum(1 for result in results if not result.passed),
+        "cases": [result.to_dict() for result in results],
+    }
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        for result in results:
+            status = "PASS" if result.passed else "FAIL"
+            print(f"{status} {result.name}")
+            for error in result.errors:
+                print(f"  - {error}")
+        print(f"{payload['total_cases'] - payload['failed_cases']}/{payload['total_cases']} golden evals passed")
+    return 0 if passed else 1
 
 
 def _handle_incident_triage_demo(args: argparse.Namespace) -> int:

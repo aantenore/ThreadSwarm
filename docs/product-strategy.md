@@ -75,7 +75,7 @@ Should have:
 - timeout policies per task (implemented as logical attempt deadlines);
 - JSON/YAML DAG loading from CLI (JSON implemented);
 - OpenAI-compatible model worker adapter (implemented);
-- golden-case eval fixtures for compiler and local-tool DAG behavior;
+- golden-case eval fixtures for local-tool DAG behavior (implemented);
 - optional OpenTelemetry or LangSmith/OpenInference adapter.
 
 Could have:
@@ -139,6 +139,12 @@ Model-backed execution now supports:
 - construction from `ThreadSwarmConfig`;
 - `to_worker_config()` for `ActorHypervisor`;
 - compact JSON task envelopes with payload previews and dependency results.
+
+Golden evals now support:
+- file-backed JSON cases under `evals/golden`;
+- deterministic local toolkit execution;
+- subset comparison against report JSON;
+- `threadswarm eval-golden` for local regression checks.
 
 ## Build-Vs-Buy Recommendation
 

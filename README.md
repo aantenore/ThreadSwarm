@@ -58,6 +58,7 @@ What the repo can do today:
 - mark slow attempts failed with per-task logical timeout policies
 - create OpenAI-compatible model worker configs for `model_type` tasks
 - run JSON DAG files from the CLI with a built-in deterministic text toolkit
+- run file-backed golden eval fixtures for deterministic DAG regressions
 - run packaged demos and DAG validation through the `threadswarm` CLI
 - configure compiler provider settings through typed environment-backed config
 
@@ -125,6 +126,8 @@ docs/
   quickstart.md             Fast path from install to runnable demo
   local-tool-pipelines.md   Practical guide for local tool DAGs
   rfcs/                     RFC folder for architectural proposals
+evals/
+  golden/                   Deterministic JSON eval fixtures
 examples/
   incident_triage.py        Compatibility wrapper for the packaged demo
 src/
@@ -191,6 +194,12 @@ Run a DAG JSON file with the built-in text toolkit:
 
 ```bash
 threadswarm run-dag path/to/dag.json --payload "hello local dag" --json
+```
+
+Run deterministic golden eval fixtures:
+
+```bash
+threadswarm eval-golden evals/golden --json
 ```
 
 Compiler provider settings can be supplied through environment variables documented in `.env.example`:

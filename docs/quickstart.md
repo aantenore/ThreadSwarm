@@ -89,6 +89,12 @@ Or run a DAG JSON file with the built-in text toolkit:
 threadswarm run-dag path/to/dag.json --payload "hello local dag" --json
 ```
 
+Run deterministic golden eval fixtures:
+
+```bash
+threadswarm eval-golden evals/golden --json
+```
+
 ## 5. Use The Pattern For Your Own Workflow
 
 The basic recipe is:
