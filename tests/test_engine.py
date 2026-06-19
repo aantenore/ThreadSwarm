@@ -1,5 +1,7 @@
 """Tests for shared memory and actor pool (no real model)."""
 
+import time
+
 import numpy as np
 import pytest
 from pydantic import BaseModel, ConfigDict
@@ -17,10 +19,17 @@ from src.engine.tool_registry import LocalToolRegistry
 
 
 class TextToolInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    payload: str
+    dependency_results: dict
     task_id: str
     instruction: str
     modality: str
-    payload: str
+    tool_name: str | None
+    model_type: str | None
+    route_key: str | None
+    attempt: int | None
 
 
 class NormalizedTextOutput(BaseModel):
@@ -116,6 +125,18 @@ def _flaky_once_tool(context, instruction, task_id, modality, model_type):
 
 def _always_fail_tool(context, instruction, task_id, modality, model_type):
     raise RuntimeError("still failing")
+
+
+def _slow_tool(context, instruction, task_id, modality, model_type):
+    time.sleep(0.2)
+    return {"task_id": task_id, "attempt": context["attempt"]}
+
+
+def _slow_first_attempt_tool(context, instruction, task_id, modality, model_type):
+    attempt = context["attempt"]
+    if attempt == 1:
+        time.sleep(0.4)
+    return {"task_id": task_id, "attempt": attempt}
 
 
 def test_context_memory_manager_ndarray():
@@ -342,6 +363,79 @@ def test_dag_orchestrator_reports_exhausted_retries():
     assert record.status == "failed"
     assert record.attempts == 3
     assert record.attempt_errors == ["still failing", "still failing", "still failing"]
+
+
+def test_dag_orchestrator_marks_task_timeout_and_blocks_dependents():
+    dag = TaskDAG(
+        tasks=[
+            SubTask(
+                id="slow_task",
+                description="Slow",
+                instruction="Run slowly",
+                dependencies=[],
+                tool_name="slow-tool",
+                timeout_seconds=0.05,
+            ),
+            SubTask(
+                id="blocked_task",
+                description="Blocked",
+                instruction="Never runs",
+                dependencies=["slow_task"],
+                tool_name="slow-tool",
+            ),
+        ]
+    )
+
+    registry = LocalToolRegistry()
+    registry.register("slow-tool", _slow_tool, num_workers=1)
+
+    orchestrator = DAGOrchestrator(registry.create_hypervisor())
+    report = orchestrator.run(dag, context="ignored", fail_fast=False)
+    record = report.task_results["slow_task"]
+
+    assert report.succeeded is False
+    assert report.failed_task_ids == ["slow_task"]
+    assert report.blocked_task_ids == ["blocked_task"]
+    assert record.status == "failed"
+    assert record.timed_out is True
+    assert record.timeout_seconds == 0.05
+    assert "timed out after 0.05 seconds" in (record.error or "")
+
+
+def test_dag_orchestrator_retries_after_timeout_and_ignores_late_result():
+    dag = TaskDAG(
+        tasks=[
+            SubTask(
+                id="slow_once_task",
+                description="Slow once",
+                instruction="Retry after timeout",
+                dependencies=[],
+                tool_name="slow-first-attempt-tool",
+                retry_count=1,
+                timeout_seconds=0.15,
+            ),
+        ]
+    )
+
+    registry = LocalToolRegistry()
+    registry.register("slow-first-attempt-tool", _slow_first_attempt_tool, num_workers=2)
+
+    hypervisor = registry.create_hypervisor()
+    hypervisor.start()
+    try:
+        orchestrator = DAGOrchestrator(hypervisor)
+        report = orchestrator.run(dag, context="ignored")
+    finally:
+        hypervisor.shutdown()
+    record = report.task_results["slow_once_task"]
+
+    assert report.succeeded is True
+    assert record.status == "completed"
+    assert record.error is None
+    assert record.timed_out is False
+    assert record.attempts == 2
+    assert record.attempt_errors == ["Task slow_once_task attempt 1 timed out after 0.15 seconds"]
+    assert report.final_result == {"task_id": "slow_once_task", "attempt": 2}
 
 
 def test_dag_orchestrator_default_reducer_returns_leaf_mapping_for_branches():

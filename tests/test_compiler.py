@@ -56,11 +56,12 @@ def test_parse_llm_output_with_modality():
 def test_parse_llm_output_with_retry_policy():
     compiler = SemanticCompiler(base_url="http://localhost:11434/v1", model="dummy")
     raw = '''[
-        {"id": "t1", "description": "Fetch", "instruction": "Fetch data", "dependencies": [], "tool_name": "fetch-local", "retry_count": 2, "retry_delay_seconds": 0.25}
+        {"id": "t1", "description": "Fetch", "instruction": "Fetch data", "dependencies": [], "tool_name": "fetch-local", "retry_count": 2, "retry_delay_seconds": 0.25, "timeout_seconds": 5.0}
     ]'''
     dag = compiler._parse_llm_output(raw)
     assert dag.tasks[0].retry_count == 2
     assert dag.tasks[0].retry_delay_seconds == 0.25
+    assert dag.tasks[0].timeout_seconds == 5.0
 
 
 def test_parse_llm_output_invalid_raises():
