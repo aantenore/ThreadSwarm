@@ -18,9 +18,11 @@ In code:
 ```python
 from src.compiler import SemanticCompiler
 from src.config import ThreadSwarmConfig
+from src.models import OpenAICompatibleWorker
 
 config = ThreadSwarmConfig.from_env()
 compiler = SemanticCompiler.from_config(config)
+model_worker = OpenAICompatibleWorker.from_config(config)
 ```
 
 At the CLI:
@@ -31,4 +33,5 @@ threadswarm compile "Analyze this incident bundle and produce a triage DAG" \
   --model llama3.2
 ```
 
-`compile` needs a running OpenAI-compatible provider. The local-tool demo and DAG validator do not.
+`compile` and `OpenAICompatibleWorker` need a running OpenAI-compatible provider.
+The local-tool demo, JSON DAG runner, and DAG validator do not.

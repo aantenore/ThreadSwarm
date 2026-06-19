@@ -165,6 +165,33 @@ The principle is:
 
 cheap deterministic tools first, specialized models second.
 
+## Model Worker Adapter
+
+ThreadSwarm includes a small OpenAI-compatible chat-completions worker for tasks
+that use `model_type`.
+
+```python
+from src.config import ThreadSwarmConfig
+from src.engine import ActorHypervisor, DAGOrchestrator
+from src.models import OpenAICompatibleWorker
+
+config = ThreadSwarmConfig.from_env()
+model_worker = OpenAICompatibleWorker.from_config(config)
+
+hypervisor = ActorHypervisor(
+    worker_configs=[
+        model_worker.to_worker_config(route_key=config.llm_model, num_workers=1),
+    ]
+)
+
+orchestrator = DAGOrchestrator(hypervisor)
+```
+
+The worker sends a compact JSON task envelope to `/chat/completions` and returns
+`content`, `finish_reason`, `usage`, and routing metadata. Keep deterministic
+local tools as the default path, and use this adapter only for tasks whose
+`model_type` really needs model reasoning.
+
 ## Tool Contracts
 
 Local tools can optionally define Pydantic schemas and risk metadata at registration time. Schemas are validated inside the worker process before and after tool execution.
