@@ -7,20 +7,22 @@ This quickstart gets you from clone to a working local-tool DAG in a few minutes
 From the repo root:
 
 ```bash
-pip install -r requirements.txt
-pip install -e .[dev]
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -e ".[dev]"
 ```
 
 ## 2. Run The Demo
 
-Run the incident-triage example:
+Run the packaged incident-triage demo:
 
 ```bash
-python -m examples.incident_triage
+threadswarm demo incident-triage
 ```
 
 What it does:
-- loads a sample incident bundle from `examples/data/incident_bundle.txt`
+- loads a packaged sample incident bundle
 - runs a DAG of local CPU-friendly tools
 - extracts services, log signatures, and notes
 - infers a probable cause
@@ -45,7 +47,7 @@ Primary signal: ERROR payments database connection pool exhausted
 
 The demo DAG lives in:
 
-- `examples/incident_triage.py`
+- `src/demos/incident_triage.py`
 
 Look at:
 - `build_dag()` for the task graph
@@ -53,18 +55,26 @@ Look at:
 - `incident_tool(...)` for the actual CPU-friendly executors
 - `run_demo(...)` for the orchestrated run
 
+`examples/incident_triage.py` remains as a compatibility wrapper if you prefer running the demo as a Python module.
+
 ## 4. Try Your Own Input
 
 You can point the demo at another text bundle:
 
 ```bash
-python -m examples.incident_triage --input-file path/to/your_bundle.txt
+threadswarm demo incident-triage --input-file path/to/your_bundle.txt
 ```
 
 Or print the final payload as JSON:
 
 ```bash
-python -m examples.incident_triage --json
+threadswarm demo incident-triage --json
+```
+
+You can also validate a DAG JSON file before wiring execution:
+
+```bash
+threadswarm validate-dag path/to/dag.json
 ```
 
 ## 5. Use The Pattern For Your Own Workflow
@@ -80,4 +90,5 @@ The basic recipe is:
 ## Next Reads
 
 - `docs/local-tool-pipelines.md` for the deeper design guide
+- `.env.example` for configurable compiler provider settings
 - `tests/test_engine.py` for compact execution examples

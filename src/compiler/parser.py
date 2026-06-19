@@ -14,7 +14,9 @@ import re
 from typing import Any
 
 import httpx
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
+
+from src.config import ThreadSwarmConfig
 
 logger = logging.getLogger(__name__)
 
@@ -167,6 +169,16 @@ class SemanticCompiler:
         self.system_prompt = system_prompt or DEFAULT_SYSTEM_PROMPT
         self.timeout = timeout
 
+    @classmethod
+    def from_config(
+        cls,
+        config: ThreadSwarmConfig,
+        *,
+        system_prompt: str | None = None,
+    ) -> "SemanticCompiler":
+        """Create a compiler from typed runtime configuration."""
+        return cls(**config.compiler_kwargs(), system_prompt=system_prompt)
+
     def compile(self, user_prompt: str) -> TaskDAG:
         """
         Analyze the user's intent and return a validated heterogeneous TaskDAG.
@@ -210,26 +222,34 @@ class SemanticCompiler:
 
     def _parse_llm_output(self, content: str) -> TaskDAG:
         """Extract a JSON array from LLM output and parse into TaskDAG."""
-        content = content.strip()
-        if content.startswith("```"):
-            content = re.sub(r"^```(?:json)?\s*", "", content)
-            content = re.sub(r"\s*```\s*$", "", content)
-        content = content.strip()
-
-        try:
-            raw = json.loads(content)
-        except json.JSONDecodeError as e:
-            raise SemanticCompilationError(f"Invalid JSON from LLM: {e}") from e
-
-        if isinstance(raw, list):
-            tasks = [SubTask.model_validate(item) for item in raw]
-            return TaskDAG(tasks=tasks)
-        if isinstance(raw, dict) and "tasks" in raw:
-            return TaskDAG.model_validate(raw)
-        raise SemanticCompilationError("LLM output must be a JSON array of tasks or object with 'tasks' key")
+        return parse_task_dag_json(content)
 
 
 class SemanticCompilationError(Exception):
     """Raised when the Semantic Compiler fails to produce a valid DAG."""
 
     pass
+
+
+def parse_task_dag_json(content: str) -> TaskDAG:
+    """Parse a TaskDAG from JSON text, accepting arrays, objects, and JSON fences."""
+    content = content.strip()
+    if content.startswith("```"):
+        content = re.sub(r"^```(?:json)?\s*", "", content)
+        content = re.sub(r"\s*```\s*$", "", content)
+    content = content.strip()
+
+    try:
+        raw = json.loads(content)
+    except json.JSONDecodeError as e:
+        raise SemanticCompilationError(f"Invalid JSON DAG: {e}") from e
+
+    try:
+        if isinstance(raw, list):
+            tasks = [SubTask.model_validate(item) for item in raw]
+            return TaskDAG(tasks=tasks)
+        if isinstance(raw, dict) and "tasks" in raw:
+            return TaskDAG.model_validate(raw)
+    except ValidationError as e:
+        raise SemanticCompilationError(f"Invalid DAG schema: {e}") from e
+    raise SemanticCompilationError("DAG JSON must be an array of tasks or an object with a 'tasks' key")

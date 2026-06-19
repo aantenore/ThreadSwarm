@@ -21,6 +21,7 @@ In practice:
 
 ## Core Pieces
 
+- `ThreadSwarmConfig`: typed provider/runtime configuration
 - `SubTask`: one task in the DAG
 - `TaskDAG`: ordered task list with dependencies
 - `LocalToolRegistry`: maps local tool names to worker callables
@@ -199,3 +200,25 @@ Large shared inputs should stay in shared memory as the main `payload`.
 5. Only then teach the semantic compiler to emit the same `tool_name` values.
 
 That sequence keeps the runtime testable before any prompt-dependent planning is introduced.
+
+## CLI And Configuration
+
+Use the CLI to smoke test the packaged workflow:
+
+```bash
+threadswarm demo incident-triage --json
+```
+
+Use the validator before handing a DAG to the orchestrator:
+
+```bash
+threadswarm validate-dag path/to/dag.json
+```
+
+Compiler provider settings are read through `ThreadSwarmConfig` and can be supplied with environment variables:
+
+```bash
+THREADSWARM_LLM_BASE_URL=http://localhost:11434/v1
+THREADSWARM_LLM_MODEL=llama3.2
+THREADSWARM_LLM_TIMEOUT=60
+```

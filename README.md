@@ -34,7 +34,10 @@ flowchart LR
 ```
 
 The runtime is split into a few small pieces:
+- `src/config.py`: typed runtime configuration for provider/model settings
+- `src/cli.py`: command line entrypoint for validation, compilation, and demos
 - `src/compiler/`: planning only
+- `src/demos/`: packaged runnable demos and sample data
 - `src/engine/shared_memory.py`: zero-copy context sharing for `ndarray`, `str`, and `bytes`
 - `src/engine/actor_pool.py`: process-based execution pool
 - `src/engine/orchestrator.py`: dependency-aware DAG execution
@@ -49,11 +52,12 @@ What the repo can do today:
 - execute a DAG end-to-end with dependency tracking
 - block downstream tasks after upstream failures
 - reduce leaf task results into a final result
+- run packaged demos and DAG validation through the `threadswarm` CLI
+- configure compiler provider settings through typed environment-backed config
 
 What is still intentionally lightweight:
 - real model adapters in `src/models/`
 - retries, persistence, and richer scheduling policies
-- a polished CLI or end-user app layer
 
 ## Task Schema
 
@@ -108,10 +112,12 @@ docs/
   local-tool-pipelines.md   Practical guide for local tool DAGs
   rfcs/                     RFC folder for architectural proposals
 examples/
-  incident_triage.py        Runnable local-tool DAG example
-  data/                     Sample input bundles for examples
+  incident_triage.py        Compatibility wrapper for the packaged demo
 src/
+  cli.py                    `threadswarm` command line interface
+  config.py                 Typed runtime configuration
   compiler/                 Semantic compiler and DAG schema
+  demos/                    Packaged demos and sample data
   engine/                   Shared memory, actor pool, orchestrator, tool registry
   models/                   Optional model adapters
 tests/                      Compiler and engine tests
@@ -136,8 +142,10 @@ Dependencies live in:
 Typical setup:
 
 ```bash
-pip install -r requirements.txt
-pip install -e .[dev]
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -e ".[dev]"
 ```
 
 Typical test run:
@@ -146,14 +154,35 @@ Typical test run:
 pytest -q
 ```
 
+Run the packaged demo:
+
+```bash
+threadswarm demo incident-triage
+```
+
+Validate a DAG JSON file:
+
+```bash
+threadswarm validate-dag path/to/dag.json
+```
+
+Compiler provider settings can be supplied through environment variables documented in `.env.example`:
+
+```bash
+THREADSWARM_LLM_BASE_URL=http://localhost:11434/v1
+THREADSWARM_LLM_MODEL=llama3.2
+THREADSWARM_LLM_TIMEOUT=60
+```
+
 ## Contribution Notes
 
 - Keep planning concerns in `src/compiler`
 - Keep execution concerns in `src/engine`
+- Keep machine/provider variation in `src/config.py` and `.env.example`
 - Prefer local tools when they can solve the task well
 - Add model-backed executors only where they materially improve outcomes
 - Write RFCs in `docs/rfcs/` for meaningful architectural changes
 
 ## Status
 
-The core runtime is implemented and tested. The next useful layer is a richer library of local tools and a stronger story for mixed tool-plus-model workflows.
+The MVP runtime is implemented, packaged, CLI-accessible, and covered by tests. The next useful layer is a richer library of local tools and a stronger story for mixed tool-plus-model workflows.

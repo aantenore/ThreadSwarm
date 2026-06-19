@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "ThreadSwarm"
 version = "0.1.0"
-description = "Semantic Compiler & distributed Vision AI on CPUs — actor swarm with zero-copy shared memory"
+description = "CPU-first DAG runtime for local tools and lightweight AI workers"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -18,6 +18,15 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=7.0.0"]
 
+[project.scripts]
+threadswarm = "src.cli:main"
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["src*"]
+
+[tool.setuptools.package-data]
+"src.demos" = ["data/*.txt"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
