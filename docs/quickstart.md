@@ -83,6 +83,12 @@ You can also validate a DAG JSON file before wiring execution:
 threadswarm validate-dag path/to/dag.json
 ```
 
+Or run a DAG JSON file with the built-in text toolkit:
+
+```bash
+threadswarm run-dag path/to/dag.json --payload "hello local dag" --json
+```
+
 ## 5. Use The Pattern For Your Own Workflow
 
 The basic recipe is:

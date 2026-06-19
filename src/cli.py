@@ -12,7 +12,8 @@ from typing import Sequence
 from src.compiler import SemanticCompilationError, SemanticCompiler, parse_task_dag_json
 from src.config import ThreadSwarmConfig, ThreadSwarmConfigError
 from src.demos.incident_triage import load_bundle_text, run_demo
-from src.engine import DAGExecutionReport
+from src.engine import DAGExecutionReport, DAGOrchestrator
+from src.tools import build_text_tool_registry
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -29,6 +30,16 @@ def build_parser() -> argparse.ArgumentParser:
     compile_parser.add_argument("--model", help="Model name to request from the compiler provider.")
     compile_parser.add_argument("--timeout", type=float, help="Compiler HTTP timeout in seconds.")
     compile_parser.set_defaults(handler=_handle_compile)
+
+    run_parser = subparsers.add_parser("run-dag", help="Run a TaskDAG JSON file with a built-in local toolkit.")
+    run_parser.add_argument("dag_file", type=Path, help="Path to a JSON DAG array or object with a tasks key.")
+    run_parser.add_argument("--toolkit", choices=("text",), default="text", help="Built-in local toolkit to use.")
+    run_parser.add_argument("--payload", default=None, help="Inline text payload for the DAG.")
+    run_parser.add_argument("--input-file", type=Path, default=None, help="Read text payload from this file.")
+    run_parser.add_argument("--json", action="store_true", help="Print final result as JSON.")
+    run_parser.add_argument("--report-file", type=Path, help="Write the full execution report JSON to this path.")
+    run_parser.add_argument("--no-fail-fast", action="store_true", help="Return a report instead of raising on task failure.")
+    run_parser.set_defaults(handler=_handle_run_dag)
 
     demo_parser = subparsers.add_parser("demo", help="Run packaged demos.")
     demo_subparsers = demo_parser.add_subparsers(dest="demo_name", required=True)
@@ -100,6 +111,28 @@ def _handle_compile(args: argparse.Namespace) -> int:
     return 0
 
 
+def _handle_run_dag(args: argparse.Namespace) -> int:
+    dag = parse_task_dag_json(args.dag_file.read_text(encoding="utf-8"))
+    validation_error = dag.validation_error()
+    if validation_error:
+        raise ValueError(f"invalid DAG: {validation_error}")
+
+    payload = _read_payload(args.payload, args.input_file)
+    registry = _build_registry(args.toolkit)
+    report = DAGOrchestrator(registry.create_hypervisor()).run(
+        dag,
+        context=payload,
+        fail_fast=not args.no_fail_fast,
+    )
+    if args.report_file:
+        _write_report_file(report, args.report_file)
+    if args.json:
+        print(json.dumps(report.final_result, indent=2, sort_keys=True))
+    else:
+        print(report.final_result)
+    return 0
+
+
 def _handle_incident_triage_demo(args: argparse.Namespace) -> int:
     report = run_demo(load_bundle_text(args.input_file))
     if args.report_file:
@@ -119,6 +152,20 @@ def _write_report_file(report: DAGExecutionReport, path: Path) -> None:
         json.dumps(report.to_dict(include_dependency_results=True), indent=2, sort_keys=True),
         encoding="utf-8",
     )
+
+
+def _read_payload(payload: str | None, input_file: Path | None) -> str:
+    if payload is not None and input_file is not None:
+        raise ValueError("Provide either --payload or --input-file, not both")
+    if input_file is not None:
+        return input_file.read_text(encoding="utf-8")
+    return payload or ""
+
+
+def _build_registry(toolkit: str):
+    if toolkit == "text":
+        return build_text_tool_registry()
+    raise ValueError(f"Unknown toolkit: {toolkit}")
 
 
 if __name__ == "__main__":

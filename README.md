@@ -55,6 +55,7 @@ What the repo can do today:
 - export structured execution reports for debugging and evals
 - validate optional local tool input/output contracts with Pydantic schemas
 - retry transient task failures with per-task retry policies
+- run JSON DAG files from the CLI with a built-in deterministic text toolkit
 - run packaged demos and DAG validation through the `threadswarm` CLI
 - configure compiler provider settings through typed environment-backed config
 
@@ -129,6 +130,7 @@ src/
   demos/                    Packaged demos and sample data
   engine/                   Shared memory, actor pool, orchestrator, tool registry
   models/                   Optional model adapters
+  tools/                    Built-in local toolkits
 tests/                      Compiler and engine tests
 ```
 
@@ -181,6 +183,12 @@ Validate a DAG JSON file:
 threadswarm validate-dag path/to/dag.json
 ```
 
+Run a DAG JSON file with the built-in text toolkit:
+
+```bash
+threadswarm run-dag path/to/dag.json --payload "hello local dag" --json
+```
+
 Compiler provider settings can be supplied through environment variables documented in `.env.example`:
 
 ```bash
@@ -198,6 +206,7 @@ THREADSWARM_LLM_TIMEOUT=60
 - Keep local tools narrow and contract-backed when their outputs feed downstream tasks
 - Use task retry policies only for idempotent or safe-to-repeat work
 - Prefer local tools when they can solve the task well
+- Keep built-in toolkits small, deterministic, and easy to test
 - Add model-backed executors only where they materially improve outcomes
 - Write RFCs in `docs/rfcs/` for meaningful architectural changes
 
