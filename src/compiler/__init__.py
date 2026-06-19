@@ -11,6 +11,7 @@ from .parser import (
     SemanticCompilationError,
     SubTask,
     TaskDAG,
+    parse_task_dag_json,
 )
 
 __all__ = [
@@ -24,4 +25,5 @@ __all__ = [
     "SemanticCompilationError",
     "SubTask",
     "TaskDAG",
+    "parse_task_dag_json",
 ]
