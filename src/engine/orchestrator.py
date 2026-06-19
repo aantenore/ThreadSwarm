@@ -40,6 +40,10 @@ class TaskExecutionRecord:
     tool_name: str | None = None
     model_type: str | None = None
     dependencies: list[str] = field(default_factory=list)
+    attempts: int = 0
+    max_attempts: int = 1
+    retry_delay_seconds: float = 0.0
+    attempt_errors: list[str] = field(default_factory=list)
 
     @property
     def succeeded(self) -> bool:
@@ -70,6 +74,10 @@ class TaskExecutionRecord:
             "tool_name": self.tool_name,
             "model_type": self.model_type,
             "dependencies": list(self.dependencies),
+            "attempts": self.attempts,
+            "max_attempts": self.max_attempts,
+            "retry_delay_seconds": self.retry_delay_seconds,
+            "attempt_errors": list(self.attempt_errors),
         }
         if include_results:
             payload["result"] = _json_safe(self.result)
@@ -250,6 +258,8 @@ class DAGOrchestrator:
                 tool_name=task.tool_name,
                 model_type=task.model_type,
                 dependencies=list(task.dependencies),
+                max_attempts=task.retry_count + 1,
+                retry_delay_seconds=task.retry_delay_seconds,
             )
             for task in dag.tasks
         }
@@ -261,6 +271,7 @@ class DAGOrchestrator:
 
         running_tasks = 0
         failures_seen = False
+        retry_ready_at: dict[str, float] = {}
 
         def submit_task(task_id: str) -> None:
             nonlocal running_tasks
@@ -271,6 +282,7 @@ class DAGOrchestrator:
 
             dependency_results = {dependency_id: task_results[dependency_id].result for dependency_id in task.dependencies}
             instruction = task.instruction
+            record.attempts += 1
             self.actor_hypervisor.submit(
                 {
                     "task_id": task.id,
@@ -282,13 +294,33 @@ class DAGOrchestrator:
                     "tool_name": task.tool_name,
                     "model_type": task.model_type,
                     "payload_hint": task.payload_hint,
+                    "attempt": record.attempts,
                 }
             )
             record.status = "running"
             record.submitted_at = time.monotonic()
+            record.completed_at = None
             record.submitted_instruction = instruction
             record.dependency_results = dependency_results
             running_tasks += 1
+
+        def schedule_retry(task_id: str, reason: str) -> None:
+            task = task_lookup[task_id]
+            record = task_results[task_id]
+            record.status = "pending"
+            record.error = reason
+            retry_ready_at[task_id] = time.monotonic() + task.retry_delay_seconds
+
+        def submit_due_retries() -> None:
+            now = time.monotonic()
+            due_task_ids = [
+                task_id
+                for task_id, ready_at in retry_ready_at.items()
+                if ready_at <= now and task_results[task_id].status == "pending"
+            ]
+            for task_id in due_task_ids:
+                retry_ready_at.pop(task_id, None)
+                submit_task(task_id)
 
         def block_dependents(task_id: str, reason: str) -> None:
             timestamp = time.monotonic()
@@ -327,21 +359,29 @@ class DAGOrchestrator:
                 )
 
             while True:
+                submit_due_retries()
                 finished = sum(
                     1 for record in task_results.values() if record.status in {"completed", "failed", "blocked"}
                 )
                 if finished == len(dag.tasks):
                     break
 
+                remaining_timeout = self._remaining_timeout(started_at, timeout)
+                if remaining_timeout is not None and remaining_timeout <= 0:
+                    raise DAGExecutionError("DAG execution timed out")
+
                 if running_tasks == 0:
+                    if retry_ready_at:
+                        wait_for_retry = max(0.0, min(retry_ready_at.values()) - time.monotonic())
+                        if remaining_timeout is not None:
+                            wait_for_retry = min(wait_for_retry, remaining_timeout)
+                        time.sleep(min(0.05, wait_for_retry))
+                        continue
                     pending = [task_id for task_id, record in task_results.items() if record.status == "pending"]
                     raise DAGExecutionError(
                         f"DAG execution stalled with pending tasks: {', '.join(pending)}",
                     )
 
-                remaining_timeout = self._remaining_timeout(started_at, timeout)
-                if remaining_timeout is not None and remaining_timeout <= 0:
-                    raise DAGExecutionError("DAG execution timed out")
                 result = self.actor_hypervisor.get_result(
                     timeout=min(0.5, remaining_timeout) if remaining_timeout is not None else 0.5
                 )
@@ -354,9 +394,13 @@ class DAGOrchestrator:
                 record.completed_at = time.monotonic()
 
                 if result.get("error"):
-                    failures_seen = True
                     record.status = "failed"
                     record.error = result["error"]
+                    record.attempt_errors.append(result["error"])
+                    if record.attempts <= task_lookup[task_id].retry_count:
+                        schedule_retry(task_id, result["error"])
+                        continue
+                    failures_seen = True
                     block_dependents(task_id, result["error"])
                     if fail_fast:
                         block_pending_tasks(f"Execution stopped after task {task_id} failed: {result['error']}")

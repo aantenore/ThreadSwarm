@@ -103,6 +103,21 @@ def _invalid_contract_tool(context, instruction, task_id, modality, model_type):
     return {"unexpected": "shape"}
 
 
+_FLAKY_TOOL_ATTEMPTS: dict[str, int] = {}
+
+
+def _flaky_once_tool(context, instruction, task_id, modality, model_type):
+    attempts = _FLAKY_TOOL_ATTEMPTS.get(task_id, 0) + 1
+    _FLAKY_TOOL_ATTEMPTS[task_id] = attempts
+    if attempts == 1:
+        raise RuntimeError("transient failure")
+    return {"attempts": attempts, "instruction": instruction}
+
+
+def _always_fail_tool(context, instruction, task_id, modality, model_type):
+    raise RuntimeError("still failing")
+
+
 def test_context_memory_manager_ndarray():
     """ContextMemoryManager: ndarray roundtrip (e.g. image/audio)."""
     manager = ContextMemoryManager(name_prefix="test_")
@@ -270,6 +285,63 @@ def test_local_tool_contract_validation_failure_blocks_task():
     assert report.succeeded is False
     assert report.failed_task_ids == ["task_1"]
     assert "Tool bad-tool output schema validation failed" in (report.task_results["task_1"].error or "")
+
+
+def test_dag_orchestrator_retries_transient_task_failure():
+    dag = TaskDAG(
+        tasks=[
+            SubTask(
+                id="flaky_retry_task",
+                description="Flaky",
+                instruction="Retry once",
+                dependencies=[],
+                tool_name="flaky-tool",
+                retry_count=1,
+            ),
+        ]
+    )
+
+    registry = LocalToolRegistry()
+    registry.register("flaky-tool", _flaky_once_tool, num_workers=1)
+
+    orchestrator = DAGOrchestrator(registry.create_hypervisor())
+    report = orchestrator.run(dag, context="ignored")
+    record = report.task_results["flaky_retry_task"]
+
+    assert report.succeeded is True
+    assert record.attempts == 2
+    assert record.attempt_errors == ["transient failure"]
+    assert report.final_result == {"attempts": 2, "instruction": "Retry once"}
+    exported = report.to_dict()
+    assert exported["task_results"]["flaky_retry_task"]["attempts"] == 2
+    assert exported["task_results"]["flaky_retry_task"]["attempt_errors"] == ["transient failure"]
+
+
+def test_dag_orchestrator_reports_exhausted_retries():
+    dag = TaskDAG(
+        tasks=[
+            SubTask(
+                id="always_fail_task",
+                description="Always fail",
+                instruction="Exhaust retries",
+                dependencies=[],
+                tool_name="always-fail-tool",
+                retry_count=2,
+            ),
+        ]
+    )
+
+    registry = LocalToolRegistry()
+    registry.register("always-fail-tool", _always_fail_tool, num_workers=1)
+
+    orchestrator = DAGOrchestrator(registry.create_hypervisor())
+    report = orchestrator.run(dag, context="ignored", fail_fast=False)
+    record = report.task_results["always_fail_task"]
+
+    assert report.succeeded is False
+    assert record.status == "failed"
+    assert record.attempts == 3
+    assert record.attempt_errors == ["still failing", "still failing", "still failing"]
 
 
 def test_dag_orchestrator_default_reducer_returns_leaf_mapping_for_branches():
