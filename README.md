@@ -53,6 +53,7 @@ What the repo can do today:
 - block downstream tasks after upstream failures
 - reduce leaf task results into a final result
 - export structured execution reports for debugging and evals
+- validate optional local tool input/output contracts with Pydantic schemas
 - run packaged demos and DAG validation through the `threadswarm` CLI
 - configure compiler provider settings through typed environment-backed config
 
@@ -191,6 +192,7 @@ THREADSWARM_LLM_TIMEOUT=60
 - Keep execution concerns in `src/engine`
 - Keep machine/provider variation in `src/config.py` and `.env.example`
 - Keep runtime behavior observable through structured execution reports
+- Keep local tools narrow and contract-backed when their outputs feed downstream tasks
 - Prefer local tools when they can solve the task well
 - Add model-backed executors only where they materially improve outcomes
 - Write RFCs in `docs/rfcs/` for meaningful architectural changes

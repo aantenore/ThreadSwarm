@@ -164,6 +164,44 @@ The principle is:
 
 cheap deterministic tools first, specialized models second.
 
+## Tool Contracts
+
+Local tools can optionally define Pydantic schemas and risk metadata at registration time. Schemas are validated inside the worker process before and after tool execution.
+
+```python
+from pydantic import BaseModel, ConfigDict
+
+
+class NormalizeInput(BaseModel):
+    task_id: str
+    instruction: str
+    modality: str
+    payload: str
+
+
+class NormalizeOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    instruction: str
+    normalized: str
+    modality: str
+
+
+registry.register(
+    "normalize-text",
+    text_tool,
+    description="Normalize raw text",
+    modalities=("text",),
+    input_schema=NormalizeInput,
+    output_schema=NormalizeOutput,
+    risk_class="compute_only",
+    side_effect_class="none",
+    result_size_limit=500,
+)
+```
+
+Use contracts for tools whose output feeds downstream tasks. Contract failures are returned as task failures, which keeps regression tests and execution reports honest.
+
 ## Dependency Results
 
 Every downstream task receives a small `dependency_results` mapping.

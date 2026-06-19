@@ -2,6 +2,7 @@
 
 import numpy as np
 import pytest
+from pydantic import BaseModel, ConfigDict
 
 from src.compiler.parser import SubTask, TaskDAG
 from src.engine.actor_pool import ActorHypervisor, SHUTDOWN_SENTINEL
@@ -13,6 +14,27 @@ from src.engine.shared_memory import (
     load_image,
 )
 from src.engine.tool_registry import LocalToolRegistry
+
+
+class TextToolInput(BaseModel):
+    task_id: str
+    instruction: str
+    modality: str
+    payload: str
+
+
+class NormalizedTextOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    instruction: str
+    normalized: str
+    modality: str
+
+
+class RequiredValueOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    value: str
 
 
 # Module-level callables, picklable on Windows. New hook signature: (context, instruction, task_id, modality, model_type).
@@ -75,6 +97,10 @@ def _binary_result_tool(context, instruction, task_id, modality, model_type):
         "shape": (2, 3),
         "array_like": np.array([1, 2, 3], dtype=np.int64),
     }
+
+
+def _invalid_contract_tool(context, instruction, task_id, modality, model_type):
+    return {"unexpected": "shape"}
 
 
 def test_context_memory_manager_ndarray():
@@ -190,6 +216,60 @@ def test_dag_orchestrator_runs_linear_workflow():
     assert exported["summary"]["duration_seconds"] >= 0
     assert exported["task_results"]["task_2"]["tool_name"] == "summarize-text"
     assert exported["task_results"]["task_2"]["dependency_results"]["task_1"]["normalized"] == "CIAO SWARM"
+
+
+def test_local_tool_contracts_validate_output_and_expose_metadata():
+    dag = TaskDAG(
+        tasks=[
+            SubTask(id="task_1", description="Normalize", instruction="Normalize input", dependencies=[], tool_name="normalize-text"),
+        ]
+    )
+
+    registry = LocalToolRegistry()
+    registry.register(
+        "normalize-text",
+        _local_tool_inference,
+        description="Normalize text",
+        modalities=("text",),
+        input_schema=TextToolInput,
+        output_schema=NormalizedTextOutput,
+        risk_class="compute_only",
+        side_effect_class="none",
+        result_size_limit=500,
+    )
+
+    contracts = registry.contracts()
+    assert contracts["normalize-text"]["risk_class"] == "compute_only"
+    assert contracts["normalize-text"]["side_effect_class"] == "none"
+    assert contracts["normalize-text"]["output_schema"]["properties"]["normalized"]["type"] == "string"
+
+    orchestrator = DAGOrchestrator(registry.create_hypervisor())
+    report = orchestrator.run(dag, context="  contract  ")
+
+    assert report.succeeded is True
+    assert report.final_result == {
+        "instruction": "Normalize input",
+        "normalized": "CONTRACT",
+        "modality": "text",
+    }
+
+
+def test_local_tool_contract_validation_failure_blocks_task():
+    dag = TaskDAG(
+        tasks=[
+            SubTask(id="task_1", description="Bad", instruction="Return invalid shape", dependencies=[], tool_name="bad-tool"),
+        ]
+    )
+
+    registry = LocalToolRegistry()
+    registry.register("bad-tool", _invalid_contract_tool, output_schema=RequiredValueOutput)
+
+    orchestrator = DAGOrchestrator(registry.create_hypervisor())
+    report = orchestrator.run(dag, context="ignored", fail_fast=False)
+
+    assert report.succeeded is False
+    assert report.failed_task_ids == ["task_1"]
+    assert "Tool bad-tool output schema validation failed" in (report.task_results["task_1"].error or "")
 
 
 def test_dag_orchestrator_default_reducer_returns_leaf_mapping_for_branches():
