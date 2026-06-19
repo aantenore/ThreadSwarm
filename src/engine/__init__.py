@@ -3,7 +3,7 @@
 from .shared_memory import ContextMemoryManager, VisionMemoryManager
 from .actor_pool import ActorHypervisor, ModelActor
 from .orchestrator import DAGExecutionError, DAGExecutionReport, DAGOrchestrator, TaskExecutionRecord
-from .tool_registry import LocalToolRegistry, LocalToolSpec
+from .tool_registry import LocalToolRegistry, LocalToolSpec, ToolContract
 
 __all__ = [
     "ContextMemoryManager",
@@ -11,6 +11,7 @@ __all__ = [
     "ActorHypervisor",
     "ModelActor",
     "LocalToolSpec",
+    "ToolContract",
     "LocalToolRegistry",
     "TaskExecutionRecord",
     "DAGExecutionReport",

@@ -64,8 +64,8 @@ It is not novel as "agent orchestration". It is meaningfully differentiated as a
 ## Capability Roadmap
 
 Must have:
-- structured execution reports and trace export;
-- stable tool contracts with input/output schemas;
+- structured execution reports and trace export (implemented);
+- stable tool contracts with input/output schemas (implemented);
 - failure reports that are useful for regression tests;
 - packaged local tool examples beyond incident triage;
 - provider adapters kept behind configuration.
@@ -87,11 +87,12 @@ Could have:
 
 ## Implementation Decision
 
-The first capability implemented from this strategy is structured execution report export.
+The first capabilities implemented from this strategy are structured execution report export and optional local tool contracts.
 
 Why:
 - agentic systems need traces before they need more autonomy;
 - report JSON enables debugging, evals, dashboards, and CI regression snapshots;
+- tool contracts keep deterministic local tools auditable and safer to compose;
 - it strengthens the existing runtime without changing the architecture;
 - it does not compete with bigger frameworks.
 
@@ -109,6 +110,12 @@ The report includes:
 - leaf tasks;
 - final result;
 - dependency results when exported through CLI.
+
+Tool registration now supports:
+- input and output schemas through Pydantic models;
+- risk class and side-effect class metadata;
+- result size limits;
+- contract metadata export through `LocalToolRegistry.contracts()`.
 
 ## Build-Vs-Buy Recommendation
 
