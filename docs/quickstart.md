@@ -13,6 +13,13 @@ python -m pip install --upgrade pip
 python -m pip install -e ".[dev]"
 ```
 
+The base install supports text, bytes, NumPy arrays, and `.npy` image payloads.
+Install the optional vision dependency only when common image formats are needed:
+
+```bash
+python -m pip install -e ".[vision]"
+```
+
 ## 2. Run The Demo
 
 Run the packaged incident-triage demo:
@@ -89,7 +96,13 @@ Or run a DAG JSON file with the built-in text toolkit:
 threadswarm run-dag path/to/dag.json --payload "hello local dag" --json
 ```
 
-Run deterministic golden eval fixtures:
+Run the deterministic fixture bundled with ThreadSwarm from any working directory:
+
+```bash
+threadswarm eval-golden --json
+```
+
+Pass a file or directory when you want to run your own fixtures:
 
 ```bash
 threadswarm eval-golden evals/golden --json

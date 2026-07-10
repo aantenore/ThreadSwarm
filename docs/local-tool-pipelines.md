@@ -11,7 +11,7 @@ Use ThreadSwarm like this:
 
 1. Break the job into tiny tasks.
 2. Give each task a `tool_name` when a normal local executor can do the work.
-3. Keep the large shared payload in RAM once.
+3. Keep large payloads out of task queues by transporting them through shared memory.
 4. Let the orchestrator unlock tasks as dependencies finish.
 5. Use `model_type` only for the tasks that truly need a specialized worker.
 
@@ -26,7 +26,16 @@ In practice:
 - `TaskDAG`: ordered task list with dependencies
 - `LocalToolRegistry`: maps local tool names to worker callables
 - `DAGOrchestrator`: runs the DAG
-- `ContextMemoryManager`: stores large payloads once in shared memory
+- `ContextMemoryManager`: owns one shared-memory payload block at a time
+
+## Shared-Memory Semantics
+
+- `ndarray` payloads are copied into the shared block once, then reconstructed in
+  workers as read-only zero-copy views.
+- `str` and `bytes` payloads avoid transfer through multiprocessing task queues,
+  but reconstruction materializes a separate Python object in each worker.
+- Calling `load_and_share(...)` again on the same manager closes and unlinks its
+  previously owned block before publishing the replacement.
 
 ## Worker Contract
 
@@ -256,7 +265,10 @@ SubTask(
 Use retries for idempotent or safe-to-repeat work. Avoid retries for non-idempotent side effects unless the tool has its own idempotency key or commit guard.
 
 Execution reports include:
+- `run_id`
+- `stop_reason`
 - `attempts`
+- `attempt_ids`
 - `max_attempts`
 - `retry_delay_seconds`
 - `timeout_seconds`
@@ -279,10 +291,16 @@ SubTask(
 )
 ```
 
-When an attempt exceeds its logical deadline, the orchestrator marks it failed,
-records the timeout in `attempt_errors`, and retries if `retry_count` allows it.
-Late results from an expired attempt are ignored by attempt id. This is a
-scheduler timeout, not hard cancellation of an already-running worker process.
+The deadline starts only after a worker confirms that it attached the shared
+context and began the attempt, so time spent waiting in a saturated queue does
+not consume the task timeout. When an attempt exceeds its logical deadline, the
+orchestrator marks it failed, records the timeout in `attempt_errors`, and
+retries if `retry_count` allows it. Late results are rejected using both run and
+attempt IDs. The timed-out process is not killed independently; ThreadSwarm
+immediately recycles the tainted worker pool so retries cannot remain queued
+behind abandoned work. Because a full-pool reset cannot safely replay arbitrary
+side effects, other attempts that were concurrently in flight make the run fail
+instead of being submitted again.
 
 ## Dependency Results
 
@@ -319,14 +337,16 @@ From the CLI:
 threadswarm demo incident-triage --json --report-file reports/incident.json
 ```
 
-The exported report includes task status, route metadata, execution order, durations, final result, and optional dependency results.
+The exported report includes run and attempt IDs, stop reason, task status,
+route metadata, execution order, durations, final result, and optional
+dependency results.
 
 ## Design Rules
 
 - Keep tasks atomic.
 - Prefer one clear responsibility per task.
 - Keep dependencies explicit.
-- Store large shared inputs once, not per task.
+- Keep large inputs out of task queues; use `ndarray` when true zero-copy fan-out matters.
 - Pass only small derived outputs through `dependency_results`.
 - Register tools with stable names.
 - Keep worker functions module-level so they stay picklable on Windows.

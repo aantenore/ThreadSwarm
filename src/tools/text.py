@@ -75,8 +75,8 @@ def text_tool(context: dict[str, Any], instruction: str, task_id: str, modality:
     raise RuntimeError(f"Unknown text tool route: {tool_name}")
 
 
-def build_text_tool_registry() -> LocalToolRegistry:
-    registry = LocalToolRegistry()
+def build_text_tool_registry(*, default_workers: int | None = None) -> LocalToolRegistry:
+    registry = LocalToolRegistry(default_workers=1 if default_workers is None else default_workers)
     registry.register(
         "normalize-text",
         text_tool,

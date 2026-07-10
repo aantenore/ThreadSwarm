@@ -12,8 +12,8 @@ from typing import Sequence
 from src.compiler import SemanticCompilationError, SemanticCompiler, parse_task_dag_json
 from src.config import ThreadSwarmConfig, ThreadSwarmConfigError
 from src.demos.incident_triage import load_bundle_text, run_demo
-from src.engine import DAGExecutionReport, DAGOrchestrator
-from src.evals import evaluate_golden_path
+from src.engine import DAGExecutionError, DAGExecutionReport, DAGOrchestrator
+from src.evals import default_golden_path, evaluate_golden_path
 from src.tools import build_text_tool_registry
 
 
@@ -39,7 +39,9 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--input-file", type=Path, default=None, help="Read text payload from this file.")
     run_parser.add_argument("--json", action="store_true", help="Print final result as JSON.")
     run_parser.add_argument("--report-file", type=Path, help="Write the full execution report JSON to this path.")
-    run_parser.add_argument("--no-fail-fast", action="store_true", help="Return a report instead of raising on task failure.")
+    run_parser.add_argument(
+        "--no-fail-fast", action="store_true", help="Return a report instead of raising on task failure."
+    )
     run_parser.set_defaults(handler=_handle_run_dag)
 
     eval_parser = subparsers.add_parser("eval-golden", help="Run deterministic golden eval JSON cases.")
@@ -47,8 +49,8 @@ def build_parser() -> argparse.ArgumentParser:
         "path",
         type=Path,
         nargs="?",
-        default=Path("evals/golden"),
-        help="Golden eval JSON file or directory. Defaults to evals/golden.",
+        default=None,
+        help="Golden eval JSON file or directory. Defaults to the packaged deterministic fixtures.",
     )
     eval_parser.add_argument("--json", action="store_true", help="Print eval results as JSON.")
     eval_parser.set_defaults(handler=_handle_eval_golden)
@@ -69,7 +71,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         return args.handler(args)
-    except (OSError, ThreadSwarmConfigError, SemanticCompilationError, ValueError) as exc:
+    except (OSError, DAGExecutionError, ThreadSwarmConfigError, SemanticCompilationError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
@@ -130,7 +132,8 @@ def _handle_run_dag(args: argparse.Namespace) -> int:
         raise ValueError(f"invalid DAG: {validation_error}")
 
     payload = _read_payload(args.payload, args.input_file)
-    registry = _build_registry(args.toolkit)
+    config = ThreadSwarmConfig.from_env(os.environ)
+    registry = _build_registry(args.toolkit, default_workers=config.default_workers)
     report = DAGOrchestrator(registry.create_hypervisor()).run(
         dag,
         context=payload,
@@ -146,7 +149,7 @@ def _handle_run_dag(args: argparse.Namespace) -> int:
 
 
 def _handle_eval_golden(args: argparse.Namespace) -> int:
-    results = evaluate_golden_path(args.path)
+    results = evaluate_golden_path(args.path if args.path is not None else default_golden_path())
     passed = all(result.passed for result in results)
     payload = {
         "passed": passed,
@@ -195,9 +198,9 @@ def _read_payload(payload: str | None, input_file: Path | None) -> str:
     return payload or ""
 
 
-def _build_registry(toolkit: str):
+def _build_registry(toolkit: str, *, default_workers: int | None = None):
     if toolkit == "text":
-        return build_text_tool_registry()
+        return build_text_tool_registry(default_workers=default_workers)
     raise ValueError(f"Unknown toolkit: {toolkit}")
 
 

@@ -10,13 +10,18 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "numpy>=1.24.0",
-    "opencv-python-headless>=4.8.0",
     "pydantic>=2.0.0",
     "httpx>=0.25.0",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=7.0.0"]
+vision = ["opencv-python-headless>=4.8.0"]
+dev = [
+    "build>=1.2.2",
+    "pytest>=7.0.0",
+    "ruff>=0.12.0",
+    "twine>=5.1.0",
+]
 
 [project.scripts]
 threadswarm = "threadswarm.cli:main"
@@ -27,6 +32,18 @@ include = ["src*", "threadswarm*"]
 
 [tool.setuptools.package-data]
 "src.demos" = ["data/*.txt"]
+"threadswarm.evals" = ["golden/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+
+[tool.ruff.lint.per-file-ignores]
+# Compatibility wrappers intentionally re-export the current internal namespace.
+"threadswarm/**/*.py" = ["F403"]

@@ -4,12 +4,20 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+from importlib.resources import files
 from pathlib import Path
 from typing import Any
+
+try:
+    from importlib.resources.abc import Traversable
+except ImportError:  # pragma: no cover - Python 3.10 compatibility
+    from importlib.abc import Traversable
 
 from src.compiler import parse_task_dag_json
 from src.engine import DAGExecutionReport, DAGOrchestrator
 from src.tools import build_text_tool_registry
+
+GoldenPath = Path | Traversable
 
 
 @dataclass(slots=True)
@@ -32,10 +40,18 @@ class GoldenEvalResult:
         }
 
 
-def evaluate_golden_path(path: Path) -> list[GoldenEvalResult]:
+def default_golden_path() -> Traversable:
+    """Return the packaged deterministic eval fixture directory."""
+    return files("threadswarm.evals").joinpath("golden")
+
+
+def evaluate_golden_path(path: GoldenPath) -> list[GoldenEvalResult]:
     """Run one golden case JSON file or every JSON file in a directory."""
     if path.is_dir():
-        case_paths = sorted(item for item in path.glob("*.json") if item.is_file())
+        case_paths = sorted(
+            (item for item in path.iterdir() if item.is_file() and item.name.endswith(".json")),
+            key=lambda item: item.name,
+        )
     else:
         case_paths = [path]
     if not case_paths:
@@ -43,11 +59,12 @@ def evaluate_golden_path(path: Path) -> list[GoldenEvalResult]:
     return [run_golden_case(case_path) for case_path in case_paths]
 
 
-def run_golden_case(path: Path) -> GoldenEvalResult:
+def run_golden_case(path: GoldenPath) -> GoldenEvalResult:
     """Run a deterministic golden eval case and compare expected report fields."""
+    case_name = Path(path.name).stem
     try:
         raw_case = json.loads(path.read_text(encoding="utf-8"))
-        name = str(raw_case.get("name") or path.stem)
+        name = str(raw_case.get("name") or case_name)
         dag_payload = raw_case.get("dag", raw_case.get("tasks"))
         if dag_payload is None:
             raise ValueError("Golden eval case must include 'dag' or 'tasks'")
@@ -64,7 +81,7 @@ def run_golden_case(path: Path) -> GoldenEvalResult:
         errors = _compare_expectations(raw_case.get("expect", {}), report_payload)
         return GoldenEvalResult(name=name, path=str(path), passed=not errors, errors=errors, report=report)
     except Exception as exc:
-        return GoldenEvalResult(name=path.stem, path=str(path), passed=False, errors=[str(exc)])
+        return GoldenEvalResult(name=case_name, path=str(path), passed=False, errors=[str(exc)])
 
 
 def _build_registry(toolkit: str):

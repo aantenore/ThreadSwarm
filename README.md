@@ -4,7 +4,7 @@ ThreadSwarm is a CPU-first runtime for breaking complex work into a DAG of small
 
 The key idea is simple:
 - a semantic compiler turns a high-level request into a `TaskDAG`
-- large shared context lives once in RAM
+- large context reaches workers through shared memory instead of task queues
 - each task is routed to a cheap local tool or, when needed, a specialized worker
 - an orchestrator respects dependencies and reduces leaf results into a final output
 
@@ -39,7 +39,7 @@ The runtime is split into a few small pieces:
 - `src/cli.py`: internal command line implementation for validation, compilation, and demos
 - `src/compiler/`: planning only
 - `src/demos/`: packaged runnable demos and sample data
-- `src/engine/shared_memory.py`: zero-copy context sharing for `ndarray`, `str`, and `bytes`
+- `src/engine/shared_memory.py`: read-only zero-copy views for `ndarray`; shared-memory transport for `str` and `bytes`
 - `src/engine/actor_pool.py`: process-based execution pool
 - `src/engine/orchestrator.py`: dependency-aware DAG execution
 - `src/engine/tool_registry.py`: registration of local CPU-friendly tools
@@ -48,9 +48,11 @@ The runtime is split into a few small pieces:
 
 What the repo can do today:
 - validate DAGs with clear errors for duplicate IDs, missing dependencies, future dependencies, self-dependencies, and cycles
-- store large context once in shared memory and reconstruct it in worker processes
-- route tasks by `tool_name` or `model_type`
+- keep large context out of task queues by reconstructing it from shared memory in worker processes
+- route tasks by `tool_name` or `model_type`, rejecting missing or unknown routes before execution
 - execute a DAG end-to-end with dependency tracking
+- isolate repeated runs with unique run and attempt IDs
+- detect worker death and recycle pools that contain abandoned work
 - block downstream tasks after upstream failures
 - reduce leaf task results into a final result
 - export structured execution reports for debugging and evals
@@ -96,7 +98,12 @@ Use `model_type` when a specialized worker or model is actually required.
    - small `dependency_results`
    - task metadata like `modality`, `tool_name`, and `model_type`
    - the current execution `attempt`
+   - unique `run_id` and `attempt_id` correlation keys
 6. The orchestrator waits for completions, unlocks dependents, and reduces leaf outputs.
+
+Shared-memory reconstruction has type-specific semantics. NumPy arrays become
+read-only zero-copy views over the shared block. Text and bytes also avoid normal
+queue transfer, but each worker materializes its own Python `str` or `bytes` copy.
 
 ## Practical Guide
 
@@ -147,7 +154,7 @@ tests/                      Compiler and engine tests
 
 - CPU-first execution
 - `multiprocessing`, not threads, for inference/execution workers
-- no large payload transfer over normal queues
+- large immutable input context should use shared memory; dependency results still cross queues and should remain small
 - Windows-compatible picklable worker hooks
 
 ## Install
@@ -228,4 +235,4 @@ THREADSWARM_LLM_TIMEOUT=60
 
 ## Status
 
-The MVP runtime is implemented, packaged, CLI-accessible, and covered by tests. The next useful layer is a richer library of local tools and a stronger story for mixed tool-plus-model workflows.
+The MVP runtime is implemented, packaged, CLI-accessible, and covered by tests. The next useful layer is capability-aware compile-and-run: give the compiler the exact registered tool/worker catalog, then bind its plan directly to the fail-closed runtime.

@@ -1,8 +1,13 @@
 # Core
 numpy>=1.24.0
-opencv-python-headless>=4.8.0
 pydantic>=2.0.0
 httpx>=0.25.0
 
-# Dev / tests
+# Optional image loading: install the project with the `vision` extra.
+# python -m pip install -e ".[vision]"
+
+# Dev / tests / packaging
+build>=1.2.2
 pytest>=7.0.0
+ruff>=0.12.0
+twine>=5.1.0
