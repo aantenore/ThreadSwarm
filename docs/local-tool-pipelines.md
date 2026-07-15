@@ -248,7 +248,7 @@ Use contracts for tools whose output feeds downstream tasks. Contract failures a
 
 ## Retry Policies
 
-Tasks can retry transient failures by setting `retry_count` and optional `retry_delay_seconds`.
+Tasks can retry failures by setting `retry_count` and optional `retry_delay_seconds`. The runtime does not classify errors as transient, so configure retries only when the operation is safe to repeat.
 
 ```python
 SubTask(
@@ -297,8 +297,9 @@ not consume the task timeout. When an attempt exceeds its logical deadline, the
 orchestrator marks it failed, records the timeout in `attempt_errors`, and
 retries if `retry_count` allows it. Late results are rejected using both run and
 attempt IDs. The timed-out process is not killed independently; ThreadSwarm
-immediately recycles the tainted worker pool so retries cannot remain queued
-behind abandoned work. Because a full-pool reset cannot safely replay arbitrary
+immediately discards the current generation and starts a fresh generation of every
+route pool so retries cannot remain queued behind abandoned work. Because a
+full-hypervisor reset cannot safely replay arbitrary
 side effects, other attempts that were concurrently in flight make the run fail
 instead of being submitted again.
 
@@ -394,3 +395,10 @@ THREADSWARM_LLM_BASE_URL=http://localhost:11434/v1
 THREADSWARM_LLM_MODEL=llama3.2
 THREADSWARM_LLM_TIMEOUT=60
 ```
+
+## Related Documentation
+
+- [How ThreadSwarm Works](how-it-works.md) for the precise runtime lifecycle and diagrams
+- [Quickstart](quickstart.md) for the shortest runnable path
+- [Configuration](configuration.md) for all environment-backed settings
+- [README](../README.md) for the project overview

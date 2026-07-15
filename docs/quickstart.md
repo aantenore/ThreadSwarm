@@ -120,7 +120,9 @@ The basic recipe is:
 
 ## Next Reads
 
-- `docs/local-tool-pipelines.md` for the deeper design guide
-- `docs/product-strategy.md` for positioning and capability roadmap
-- `.env.example` for configurable compiler provider settings
-- `tests/test_engine.py` for compact execution examples
+- [How ThreadSwarm Works](how-it-works.md) for the exact runtime lifecycle and diagrams
+- [Local Tool Pipelines](local-tool-pipelines.md) for the hands-on design guide
+- [Configuration](configuration.md) and [`.env.example`](../.env.example) for compiler and worker settings
+- [Product Strategy](product-strategy.md) for positioning and the capability roadmap
+- [`tests/test_engine.py`](../tests/test_engine.py) for compact execution examples
+- [README](../README.md) to return to the project overview

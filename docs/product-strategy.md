@@ -136,13 +136,14 @@ Task execution now supports:
 - `timeout_seconds`;
 - run/attempt correlation IDs and retry errors in execution reports;
 - fail-closed route validation;
-- worker-death detection and tainted-pool recycling.
+- worker-death detection and complete-hypervisor recovery.
 
 Timeout behavior is attempt-scoped and begins after a worker start
 acknowledgement. When a task exceeds its logical deadline, the orchestrator
 marks that attempt failed, can retry it, and ignores late results using run and
 attempt IDs. Hard-killing only the specific in-flight worker remains out of
-scope; the lightweight runtime immediately recycles the whole tainted pool.
+scope; the lightweight runtime discards the current generation and starts a fresh
+generation of every route pool.
 Concurrent in-flight work is not replayed automatically because its side-effect
 state may be unknown.
 

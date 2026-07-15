@@ -22,8 +22,9 @@ to it, and an exited worker could leave the orchestrator waiting forever.
 - Workers acknowledge `started` only after attaching shared context. Per-task
   execution deadlines begin from that event, not queue submission.
 - Worker death, external pool shutdown, fail-fast cancellation, and global
-  timeout terminalize every record. A task-level timeout immediately recycles
-  the tainted pool before retrying; unrelated in-flight attempts fail rather
+  timeout terminalize every record. A task-level timeout immediately discards
+  the current generation and starts a fresh generation of every route pool before
+  retrying; unrelated in-flight attempts fail rather
   than being replayed with uncertain side effects.
 - A pool that was already running before the DAG is recreated after recovery;
   a pool created for the DAG remains stopped.
