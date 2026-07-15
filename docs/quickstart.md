@@ -13,6 +13,13 @@ python -m pip install --upgrade pip
 python -m pip install -e ".[dev]"
 ```
 
+The base install supports text, bytes, NumPy arrays, and `.npy` image payloads.
+Install the optional vision dependency only when common image formats are needed:
+
+```bash
+python -m pip install -e ".[vision]"
+```
+
 ## 2. Run The Demo
 
 Run the packaged incident-triage demo:
@@ -89,7 +96,13 @@ Or run a DAG JSON file with the built-in text toolkit:
 threadswarm run-dag path/to/dag.json --payload "hello local dag" --json
 ```
 
-Run deterministic golden eval fixtures:
+Run the deterministic fixture bundled with ThreadSwarm from any working directory:
+
+```bash
+threadswarm eval-golden --json
+```
+
+Pass a file or directory when you want to run your own fixtures:
 
 ```bash
 threadswarm eval-golden evals/golden --json
@@ -107,7 +120,9 @@ The basic recipe is:
 
 ## Next Reads
 
-- `docs/local-tool-pipelines.md` for the deeper design guide
-- `docs/product-strategy.md` for positioning and capability roadmap
-- `.env.example` for configurable compiler provider settings
-- `tests/test_engine.py` for compact execution examples
+- [How ThreadSwarm Works](how-it-works.md) for the exact runtime lifecycle and diagrams
+- [Local Tool Pipelines](local-tool-pipelines.md) for the hands-on design guide
+- [Configuration](configuration.md) and [`.env.example`](../.env.example) for compiler and worker settings
+- [Product Strategy](product-strategy.md) for positioning and the capability roadmap
+- [`tests/test_engine.py`](../tests/test_engine.py) for compact execution examples
+- [README](../README.md) to return to the project overview

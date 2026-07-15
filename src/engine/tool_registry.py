@@ -12,6 +12,8 @@ from typing import Any
 
 from pydantic import BaseModel, ValidationError
 
+from src.config import ThreadSwarmConfig
+
 from .actor_pool import ActorHypervisor, InferenceHook
 
 SchemaModel = type[BaseModel]
@@ -115,15 +117,22 @@ class LocalToolSpec:
 class LocalToolRegistry:
     """Register local tools and expose them as worker configs for ActorHypervisor."""
 
-    def __init__(self):
+    def __init__(self, *, default_workers: int = 1):
+        _validate_worker_count(default_workers, "default_workers")
         self._tools: dict[str, LocalToolSpec] = {}
+        self._default_workers = default_workers
+
+    @classmethod
+    def from_config(cls, config: ThreadSwarmConfig) -> LocalToolRegistry:
+        """Create a registry using the configured default for tools without an override."""
+        return cls(default_workers=config.default_workers or 1)
 
     def register(
         self,
         name: str,
         run: InferenceHook,
         *,
-        num_workers: int = 1,
+        num_workers: int | None = None,
         description: str = "",
         modalities: tuple[str, ...] | None = None,
         input_schema: SchemaModel | None = None,
@@ -136,6 +145,10 @@ class LocalToolRegistry:
             raise ValueError("Tool name cannot be empty")
         if name in self._tools:
             raise ValueError(f"Tool already registered: {name}")
+        if not callable(run):
+            raise ValueError(f"Tool {name} run hook must be callable")
+        resolved_workers = self._default_workers if num_workers is None else num_workers
+        _validate_worker_count(resolved_workers, f"Tool {name} num_workers")
         if not risk_class.strip():
             raise ValueError("Tool risk_class cannot be empty")
         if not side_effect_class.strip():
@@ -145,7 +158,7 @@ class LocalToolRegistry:
         spec = LocalToolSpec(
             name=name,
             run=run,
-            num_workers=max(1, num_workers),
+            num_workers=resolved_workers,
             description=description,
             modalities=tuple(modalities or ()),
             contract=ToolContract(
@@ -235,3 +248,8 @@ def _validate_result_size(tool_name: str, result: Any, limit: int | None) -> Non
     size = len(repr(result))
     if size > limit:
         raise ValueError(f"Tool {tool_name} result exceeded size limit: {size} > {limit}")
+
+
+def _validate_worker_count(value: int, label: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"{label} must be a positive integer")

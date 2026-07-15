@@ -7,13 +7,12 @@ import pytest
 from pydantic import BaseModel, ConfigDict
 
 from threadswarm.compiler.parser import SubTask, TaskDAG
-from threadswarm.engine.actor_pool import ActorHypervisor, SHUTDOWN_SENTINEL
+from threadswarm.engine.actor_pool import ActorHypervisor
 from threadswarm.engine.orchestrator import DAGExecutionError, DAGOrchestrator
 from threadswarm.engine.shared_memory import (
     ContextMemoryManager,
     VisionMemoryManager,
     attach_and_reconstruct,
-    load_image,
 )
 from threadswarm.engine.tool_registry import LocalToolRegistry
 
@@ -252,6 +251,19 @@ def test_dag_orchestrator_runs_linear_workflow():
     assert exported["summary"]["duration_seconds"] >= 0
     assert exported["task_results"]["task_2"]["tool_name"] == "summarize-text"
     assert exported["task_results"]["task_2"]["dependency_results"]["task_1"]["normalized"] == "CIAO SWARM"
+
+
+def test_registry_applies_configured_default_workers_and_rejects_invalid_overrides():
+    from threadswarm.config import ThreadSwarmConfig
+
+    registry = LocalToolRegistry.from_config(ThreadSwarmConfig(default_workers=3))
+    defaulted = registry.register("defaulted", _local_tool_inference)
+    overridden = registry.register("overridden", _local_tool_inference, num_workers=2)
+
+    assert defaulted.num_workers == 3
+    assert overridden.num_workers == 2
+    with pytest.raises(ValueError, match="positive integer"):
+        registry.register("invalid", _local_tool_inference, num_workers=0)
 
 
 def test_local_tool_contracts_validate_output_and_expose_metadata():

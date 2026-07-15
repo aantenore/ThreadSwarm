@@ -1,14 +1,18 @@
 # ThreadSwarm
 
-ThreadSwarm is a CPU-first runtime for breaking complex work into a DAG of small tasks that can run on almost any PC.
+ThreadSwarm is an embeddable, CPU-first Python runtime that executes a validated task DAG across local worker processes on one machine.
 
 The key idea is simple:
-- a semantic compiler turns a high-level request into a `TaskDAG`
-- large shared context lives once in RAM
-- each task is routed to a cheap local tool or, when needed, a specialized worker
-- an orchestrator respects dependencies and reduces leaf results into a final output
 
-This repo is aimed at practical portability, not GPU-heavy orchestration. The happy path is: use local tools first, use models only when they actually add value.
+- define small tasks with explicit dependencies and routes
+- place one large, immutable input in shared memory instead of every task queue
+- execute ready tasks in parallel with local tools or specialized model workers
+- correlate every run and retry, then reduce the leaf outputs into a final result
+
+Despite the name, execution workers are **processes**, not threads, so CPU-bound tools can run independently. ThreadSwarm is an explicit, dependency-driven DAG runtime, not a swarm of autonomous agents or a distributed cluster scheduler.
+
+> [!IMPORTANT]
+> A `TaskDAG` can be written in Python, loaded from JSON, or produced by the optional `SemanticCompiler`. Compilation and execution are separate today: the compiler does not yet know the registered tool catalog or automatically launch the resulting DAG.
 
 ## Why
 
@@ -17,29 +21,33 @@ Complex tasks often get pushed into one giant model, which creates three problem
 - latency
 - wasted intelligence for work that could be done by simpler tools
 
-ThreadSwarm takes the opposite approach: decompose work into tiny steps and run those steps with the cheapest executor that can do the job on CPU hardware.
+ThreadSwarm takes the opposite approach: decompose work into small steps and route each step explicitly to a CPU-friendly executor. It does not choose the cheapest executor automatically; the DAG supplies the route.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-    A["User intent"] --> B["SemanticCompiler"]
-    B --> C["TaskDAG"]
-    D["Shared context in RAM"] --> E["DAGOrchestrator"]
-    C --> E
-    E --> F["Local tool or worker pool"]
-    F --> G["Task results"]
-    G --> E
-    E --> H["Reduced final result"]
+    P["Python or JSON"] --> D["Validated TaskDAG"]
+    U["User intent"] --> C["SemanticCompiler<br/>(optional)"]
+    C -. "explicit handoff" .-> D
+    X["Immutable input"] --> S["Shared-memory block"]
+    D --> O["DAGOrchestrator"]
+    S -. "small metadata" .-> O
+    O <--> H["ActorHypervisor"]
+    H --> T["Local tool pools"]
+    H --> M["Model worker pools"]
+    O --> R["DAGExecutionReport"]
 ```
 
-The runtime is split into a few small pieces:
+The orchestrator validates and schedules the graph. The hypervisor owns route-specific process pools. Workers attach to shared input, execute one task, and return a correlated result. See [How ThreadSwarm Works](docs/how-it-works.md) for the exact lifecycle, routing, memory, retry, and recovery rules.
+
+The code is split into a few small pieces:
 - `threadswarm/`: public package namespace
 - `src/config.py`: internal typed runtime configuration for provider/model settings
 - `src/cli.py`: internal command line implementation for validation, compilation, and demos
 - `src/compiler/`: planning only
 - `src/demos/`: packaged runnable demos and sample data
-- `src/engine/shared_memory.py`: zero-copy context sharing for `ndarray`, `str`, and `bytes`
+- `src/engine/shared_memory.py`: read-only zero-copy input views for `ndarray`; shared-memory transport for `str` and `bytes`
 - `src/engine/actor_pool.py`: process-based execution pool
 - `src/engine/orchestrator.py`: dependency-aware DAG execution
 - `src/engine/tool_registry.py`: registration of local CPU-friendly tools
@@ -48,14 +56,16 @@ The runtime is split into a few small pieces:
 
 What the repo can do today:
 - validate DAGs with clear errors for duplicate IDs, missing dependencies, future dependencies, self-dependencies, and cycles
-- store large context once in shared memory and reconstruct it in worker processes
-- route tasks by `tool_name` or `model_type`
+- keep large context out of task queues by reconstructing it from shared memory in worker processes
+- route tasks by `tool_name` or `model_type`, rejecting missing or unknown routes before execution in explicit heterogeneous pools
 - execute a DAG end-to-end with dependency tracking
+- isolate repeated runs with unique run and attempt IDs
+- detect worker death and discard the complete hypervisor generation when work may have been abandoned
 - block downstream tasks after upstream failures
 - reduce leaf task results into a final result
 - export structured execution reports for debugging and evals
 - validate optional local tool input/output contracts with Pydantic schemas
-- retry transient task failures with per-task retry policies
+- retry task failures with explicit per-task retry policies
 - mark slow attempts failed with per-task logical timeout policies
 - create OpenAI-compatible model worker configs for `model_type` tasks
 - run JSON DAG files from the CLI with a built-in deterministic text toolkit
@@ -64,8 +74,9 @@ What the repo can do today:
 - configure compiler provider settings through typed environment-backed config
 
 What is still intentionally lightweight:
+
 - provider-specific hosted tool integrations in `src/models/`
-- hard cancellation of a single in-flight worker, persistence, and richer scheduling policies
+- hard cancellation of a single in-flight worker, distributed execution, persistence, and richer scheduling policies
 
 ## Task Schema
 
@@ -87,45 +98,41 @@ Use `model_type` when a specialized worker or model is actually required.
 
 ## Execution Model
 
-1. `SemanticCompiler.compile(...)` produces a `TaskDAG`.
-2. `ContextMemoryManager.load_and_share(...)` stores the large payload once in RAM.
-3. `DAGOrchestrator.run(...)` submits every ready task.
-4. `ActorHypervisor` routes each task to the right pool by `tool_name` or `model_type`.
-5. Workers receive:
+1. The caller supplies a `TaskDAG`, optionally produced by `SemanticCompiler.compile(...)`.
+2. The orchestrator validates the DAG and preflights every route before allocating context or starting workers.
+3. When context is supplied, `ContextMemoryManager.load_and_share(...)` copies the large payload once into shared memory.
+4. `DAGOrchestrator.run(...)` submits every root task, then unlocks dependents as their direct dependencies finish.
+5. In explicit heterogeneous pools, `ActorHypervisor` routes each task to the exact pool named by `tool_name`, otherwise `model_type`. The legacy homogeneous constructor uses its single default pool.
+6. Workers receive:
    - the shared payload
-   - small `dependency_results`
+   - small results from direct dependencies
    - task metadata like `modality`, `tool_name`, and `model_type`
    - the current execution `attempt`
-6. The orchestrator waits for completions, unlocks dependents, and reduces leaf outputs.
+7. Infrastructure events and results carry unique `run_id` and `attempt_id` keys. Late results from an old run or retry are ignored.
+8. The orchestrator reduces leaf outputs and returns a structured `DAGExecutionReport`.
+
+Shared-memory reconstruction has type-specific semantics. NumPy inputs become read-only zero-copy views over the shared block. Text and bytes avoid normal task-queue transfer, but each worker materializes its own Python `str` or `bytes` copy. Dependency results and returned results are still serialized through multiprocessing queues and should remain small.
 
 ## Practical Guide
 
-Start here if you want something runnable right away:
-
-[docs/quickstart.md](docs/quickstart.md)
-
-Then go deeper with the hands-on guide for local tool pipelines:
-
-[docs/local-tool-pipelines.md](docs/local-tool-pipelines.md)
-
-For product positioning and the capability roadmap:
-
-[docs/product-strategy.md](docs/product-strategy.md)
-
-It covers:
-- how to run the example demo
-- when to use `tool_name`
-- how to register local tools
-- how to build a small DAG
-- how to run it through the orchestrator
-- what the worker context looks like
+| Read | Use it for |
+|---|---|
+| [Quickstart](docs/quickstart.md) | Install ThreadSwarm and run the packaged demo |
+| [How ThreadSwarm Works](docs/how-it-works.md) | Exact architecture, scheduling, routing, shared memory, retries, and recovery |
+| [Local Tool Pipelines](docs/local-tool-pipelines.md) | Build and register your own tools and DAGs |
+| [Configuration](docs/configuration.md) | Environment-backed compiler and worker defaults |
+| [Product Strategy](docs/product-strategy.md) | Positioning, trade-offs, and capability roadmap |
+| [Run Isolation RFC](docs/rfcs/0001-run-isolation-and-pool-recovery.md) | Rationale behind run fencing and pool recovery |
 
 ## Repository Structure
 
 ```text
 docs/
   quickstart.md             Fast path from install to runnable demo
+  how-it-works.md           Precise runtime architecture and lifecycle
   local-tool-pipelines.md   Practical guide for local tool DAGs
+  configuration.md          Environment-backed settings
+  product-strategy.md       Positioning and roadmap
   rfcs/                     RFC folder for architectural proposals
 evals/
   golden/                   Deterministic JSON eval fixtures
@@ -147,7 +154,9 @@ tests/                      Compiler and engine tests
 
 - CPU-first execution
 - `multiprocessing`, not threads, for inference/execution workers
-- no large payload transfer over normal queues
+- one active orchestrated run per `ActorHypervisor`; use separate hypervisors for concurrent DAG runs
+- one machine only; no remote worker discovery or distributed queue
+- large immutable input context should use shared memory; dependency results still cross queues and should remain small
 - Windows-compatible picklable worker hooks
 
 ## Install
@@ -228,4 +237,4 @@ THREADSWARM_LLM_TIMEOUT=60
 
 ## Status
 
-The MVP runtime is implemented, packaged, CLI-accessible, and covered by tests. The next useful layer is a richer library of local tools and a stronger story for mixed tool-plus-model workflows.
+The local DAG execution runtime is implemented, packaged, CLI-accessible, and covered by tests. The optional semantic compiler is also implemented, but it remains a separate planning step. The next useful layer is capability-aware compile-and-run: give the compiler the exact registered tool/worker catalog, then bind its plan directly to the fail-closed runtime.

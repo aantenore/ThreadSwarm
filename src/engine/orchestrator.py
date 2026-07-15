@@ -12,6 +12,7 @@ The orchestrator is intentionally lightweight:
 from __future__ import annotations
 
 import time
+import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -46,6 +47,9 @@ class TaskExecutionRecord:
     timeout_seconds: float | None = None
     timed_out: bool = False
     attempt_errors: list[str] = field(default_factory=list)
+    attempt_ids: list[str] = field(default_factory=list)
+    current_attempt_id: str | None = None
+    run_id: str | None = None
 
     @property
     def succeeded(self) -> bool:
@@ -66,6 +70,7 @@ class TaskExecutionRecord:
         """Return a JSON-friendly execution record for tracing and debugging."""
         payload: dict[str, Any] = {
             "task_id": self.task_id,
+            "run_id": self.run_id,
             "status": self.status,
             "error": self.error,
             "submitted_at": self.submitted_at,
@@ -82,6 +87,8 @@ class TaskExecutionRecord:
             "timeout_seconds": self.timeout_seconds,
             "timed_out": self.timed_out,
             "attempt_errors": list(self.attempt_errors),
+            "attempt_ids": list(self.attempt_ids),
+            "current_attempt_id": self.current_attempt_id,
         }
         if include_results:
             payload["result"] = _json_safe(self.result)
@@ -101,6 +108,8 @@ class DAGExecutionReport:
     started_at: float
     completed_at: float
     context_metadata: dict[str, Any] | None = None
+    run_id: str | None = None
+    stop_reason: str | None = None
 
     @property
     def succeeded(self) -> bool:
@@ -125,6 +134,8 @@ class DAGExecutionReport:
         failed = len(self.failed_task_ids)
         blocked = len(self.blocked_task_ids)
         return {
+            "run_id": self.run_id,
+            "stop_reason": self.stop_reason,
             "succeeded": self.succeeded,
             "total_tasks": total_tasks,
             "completed_tasks": completed,
@@ -145,6 +156,8 @@ class DAGExecutionReport:
         """Return a JSON-friendly report for trace export and post-run analysis."""
         payload: dict[str, Any] = {
             "summary": self.summary(),
+            "run_id": self.run_id,
+            "stop_reason": self.stop_reason,
             "started_at": self.started_at,
             "completed_at": self.completed_at,
             "final_result": _json_safe(self.final_result) if include_results else None,
@@ -240,44 +253,39 @@ class DAGOrchestrator:
             raise DAGExecutionError(f"Invalid DAG: {validation_error}")
         if context is not None and context_metadata is not None:
             raise ValueError("Provide either context or context_metadata, not both")
+        run_id = uuid.uuid4().hex
+        started_at = time.monotonic()
+        self.actor_hypervisor.acquire_run(run_id)
 
         owned_context_manager: ContextMemoryManager | None = None
-        if context is not None:
-            owned_context_manager = ContextMemoryManager()
-            context_metadata = owned_context_manager.load_and_share(context)
-
-        started_at = time.monotonic()
         started_here = False
-        if not self.actor_hypervisor.started:
-            self.actor_hypervisor.start()
-            started_here = True
-
+        pool_requires_reset = False
+        run_generation: int | None = None
+        stop_reason: str | None = None
         task_lookup = {task.id: task for task in dag.tasks}
         dependency_counts = {task.id: len(task.dependencies) for task in dag.tasks}
         dependents: dict[str, list[str]] = {task.id: [] for task in dag.tasks}
-        task_results = {
-            task.id: TaskExecutionRecord(
-                task_id=task.id,
-                modality=task.modality,
-                tool_name=task.tool_name,
-                model_type=task.model_type,
-                dependencies=list(task.dependencies),
-                max_attempts=task.retry_count + 1,
-                retry_delay_seconds=task.retry_delay_seconds,
-                timeout_seconds=task.timeout_seconds,
-            )
-            for task in dag.tasks
-        }
+        task_results: dict[str, TaskExecutionRecord] = {}
         execution_order: list[str] = []
-
-        for task in dag.tasks:
-            for dep in task.dependencies:
-                dependents[dep].append(task.id)
-
-        failures_seen = False
         retry_ready_at: dict[str, float] = {}
-        active_attempts: set[tuple[str, int]] = set()
-        attempt_deadlines: dict[tuple[str, int], float] = {}
+        active_attempts: dict[str, tuple[str, int]] = {}
+        attempt_deadlines: dict[str, float] = {}
+        fail_fast_reason: str | None = None
+
+        def build_report() -> DAGExecutionReport:
+            completed_at = time.monotonic()
+            leaf_task_ids = [task.id for task in dag.tasks if not dependents[task.id]]
+            return DAGExecutionReport(
+                task_results=task_results,
+                execution_order=execution_order,
+                final_result=self.reducer(dag, task_results),
+                leaf_task_ids=leaf_task_ids,
+                started_at=started_at,
+                completed_at=completed_at,
+                context_metadata=context_metadata,
+                run_id=run_id,
+                stop_reason=stop_reason,
+            )
 
         def submit_task(task_id: str) -> None:
             task = task_lookup[task_id]
@@ -285,12 +293,17 @@ class DAGOrchestrator:
             if record.status != "pending":
                 return
 
-            dependency_results = {dependency_id: task_results[dependency_id].result for dependency_id in task.dependencies}
+            dependency_results = {
+                dependency_id: task_results[dependency_id].result for dependency_id in task.dependencies
+            }
             instruction = task.instruction
             record.attempts += 1
             attempt = record.attempts
+            attempt_id = uuid.uuid4().hex
             self.actor_hypervisor.submit(
                 {
+                    "run_id": run_id,
+                    "attempt_id": attempt_id,
                     "task_id": task.id,
                     "instruction": instruction,
                     "context_metadata": context_metadata,
@@ -311,13 +324,34 @@ class DAGOrchestrator:
             record.completed_at = None
             record.submitted_instruction = instruction
             record.dependency_results = dependency_results
-            attempt_key = (task_id, attempt)
-            active_attempts.add(attempt_key)
-            if task.timeout_seconds is not None:
-                attempt_deadlines[attempt_key] = submitted_at + task.timeout_seconds
+            record.current_attempt_id = attempt_id
+            record.attempt_ids.append(attempt_id)
+            active_attempts[attempt_id] = (task_id, attempt)
+
+        def record_started_attempts() -> None:
+            while True:
+                event = self.actor_hypervisor.get_lifecycle_event()
+                if event is None:
+                    return
+                if event.get("event") != "started" or event.get("run_id") != run_id:
+                    continue
+                attempt_id = event.get("attempt_id")
+                if not isinstance(attempt_id, str) or attempt_id not in active_attempts:
+                    continue
+                task_id, attempt = active_attempts[attempt_id]
+                record = task_results[task_id]
+                if (
+                    event.get("task_id") != task_id
+                    or record.attempts != attempt
+                    or record.current_attempt_id != attempt_id
+                ):
+                    continue
+                timeout_seconds = task_lookup[task_id].timeout_seconds
+                if timeout_seconds is not None and attempt_id not in attempt_deadlines:
+                    attempt_deadlines[attempt_id] = time.monotonic() + timeout_seconds
 
         def fail_attempt(task_id: str, reason: str, *, timed_out: bool = False) -> None:
-            nonlocal failures_seen
+            nonlocal fail_fast_reason
             record = task_results[task_id]
             record.status = "failed"
             record.error = reason
@@ -326,10 +360,9 @@ class DAGOrchestrator:
             if record.attempts <= task_lookup[task_id].retry_count:
                 schedule_retry(task_id, reason)
                 return
-            failures_seen = True
             block_dependents(task_id, reason)
             if fail_fast:
-                block_pending_tasks(f"Execution stopped after task {task_id} failed: {reason}")
+                fail_fast_reason = f"Execution stopped after task {task_id} failed: {reason}"
 
         def schedule_retry(task_id: str, reason: str) -> None:
             task = task_lookup[task_id]
@@ -339,25 +372,51 @@ class DAGOrchestrator:
             retry_ready_at[task_id] = time.monotonic() + task.retry_delay_seconds
 
         def expire_timed_out_attempts() -> None:
+            nonlocal pool_requires_reset, run_generation, stop_reason
             now = time.monotonic()
             expired_attempts = [
-                attempt_key
-                for attempt_key, deadline in attempt_deadlines.items()
-                if deadline <= now and attempt_key in active_attempts
+                attempt_id
+                for attempt_id, deadline in attempt_deadlines.items()
+                if deadline <= now and attempt_id in active_attempts
             ]
-            for task_id, attempt in expired_attempts:
-                attempt_key = (task_id, attempt)
-                active_attempts.discard(attempt_key)
-                attempt_deadlines.pop(attempt_key, None)
+            if not expired_attempts:
+                return
+
+            timed_out_reasons: dict[str, str] = {}
+            for attempt_id in expired_attempts:
+                task_id, attempt = active_attempts.pop(attempt_id)
+                attempt_deadlines.pop(attempt_id, None)
                 record = task_results[task_id]
-                if record.status != "running" or record.attempts != attempt:
+                if record.status != "running" or record.attempts != attempt or record.current_attempt_id != attempt_id:
                     continue
                 record.completed_at = now
-                fail_attempt(
-                    task_id,
-                    _format_timeout_error(task_id, attempt, task_lookup[task_id].timeout_seconds),
-                    timed_out=True,
-                )
+                reason = _format_timeout_error(task_id, attempt, task_lookup[task_id].timeout_seconds)
+                timed_out_reasons[task_id] = reason
+                fail_attempt(task_id, reason, timed_out=True)
+
+            # A logical timeout means at least one worker may still be executing
+            # against this run's shared context. Recycle immediately so retries
+            # cannot sit behind a hung attempt. If unrelated attempts were also
+            # in flight, fail them instead of replaying potentially side-effectful
+            # work after the reset.
+            concurrent_work_was_cancelled = bool(active_attempts)
+            if concurrent_work_was_cancelled:
+                stop_reason = "Pool reset after task timeout cancelled concurrent in-flight work"
+                mark_outstanding_terminal(stop_reason, running_status="failed")
+                for task_id, reason in timed_out_reasons.items():
+                    record = task_results[task_id]
+                    record.status = "failed"
+                    record.error = reason
+                    record.timed_out = True
+                    record.completed_at = now
+
+            pool_requires_reset = True
+            self.actor_hypervisor.restart(timeout=2.0)
+            run_generation = self.actor_hypervisor.generation
+            pool_requires_reset = False
+
+            if concurrent_work_was_cancelled:
+                raise DAGExecutionError(stop_reason)
 
         def submit_due_retries() -> None:
             now = time.monotonic()
@@ -381,34 +440,114 @@ class DAGOrchestrator:
                 dependent_record.completed_at = timestamp
                 block_dependents(dependent_id, dependent_record.error)
 
-        def block_pending_tasks(reason: str) -> None:
+        def mark_outstanding_terminal(
+            reason: str,
+            *,
+            running_status: str = "blocked",
+            timed_out: bool = False,
+        ) -> None:
             timestamp = time.monotonic()
             for record in task_results.values():
-                if record.status == "pending":
+                if record.status == "running":
+                    record.status = running_status
+                    record.error = reason
+                    record.timed_out = timed_out
+                    record.completed_at = timestamp
+                    if running_status == "failed":
+                        record.attempt_errors.append(reason)
+                elif record.status == "pending":
                     record.status = "blocked"
                     record.error = reason
                     record.completed_at = timestamp
+            retry_ready_at.clear()
+            active_attempts.clear()
+            attempt_deadlines.clear()
 
         try:
+            # Validate every route before allocating context or submitting any work.
+            for task in dag.tasks:
+                self.actor_hypervisor.resolve_route(
+                    {
+                        "tool_name": task.tool_name,
+                        "model_type": task.model_type,
+                    }
+                )
+
+            task_results.update(
+                {
+                    task.id: TaskExecutionRecord(
+                        task_id=task.id,
+                        run_id=run_id,
+                        modality=task.modality,
+                        tool_name=task.tool_name,
+                        model_type=task.model_type,
+                        dependencies=list(task.dependencies),
+                        max_attempts=task.retry_count + 1,
+                        retry_delay_seconds=task.retry_delay_seconds,
+                        timeout_seconds=task.timeout_seconds,
+                    )
+                    for task in dag.tasks
+                }
+            )
+            for task in dag.tasks:
+                for dep in task.dependencies:
+                    dependents[dep].append(task.id)
+
+            if not dag.tasks:
+                return build_report()
+
+            if context is not None:
+                owned_context_manager = ContextMemoryManager()
+                context_metadata = owned_context_manager.load_and_share(context)
+
+            if not self.actor_hypervisor.started:
+                self.actor_hypervisor.start()
+                started_here = True
+            run_generation = self.actor_hypervisor.generation
+
             for task in dag.tasks:
                 if dependency_counts[task.id] == 0:
                     submit_task(task.id)
 
-            if not dag.tasks:
-                completed_at = time.monotonic()
-                return DAGExecutionReport(
-                    task_results=task_results,
-                    execution_order=[],
-                    final_result=None,
-                    leaf_task_ids=[],
-                    started_at=started_at,
-                    completed_at=completed_at,
-                    context_metadata=context_metadata,
-                )
-
             while True:
+                observed_generation = self.actor_hypervisor.generation
+                if run_generation is not None and observed_generation != run_generation:
+                    stop_reason = (
+                        "ActorHypervisor pool generation changed unexpectedly while tasks were in flight "
+                        f"(expected {run_generation}, observed {observed_generation})"
+                    )
+                    mark_outstanding_terminal(stop_reason, running_status="failed")
+                    pool_requires_reset = True
+                    raise DAGExecutionError(stop_reason)
+
                 submit_due_retries()
+                record_started_attempts()
                 expire_timed_out_attempts()
+
+                if fail_fast_reason is not None:
+                    had_active_attempts = bool(active_attempts)
+                    mark_outstanding_terminal(f"Cancelled by fail-fast: {fail_fast_reason}")
+                    pool_requires_reset = pool_requires_reset or had_active_attempts
+                    stop_reason = fail_fast_reason
+                    raise DAGExecutionError(fail_fast_reason)
+
+                if active_attempts and not self.actor_hypervisor.started:
+                    stop_reason = "ActorHypervisor stopped unexpectedly while tasks were in flight"
+                    mark_outstanding_terminal(stop_reason, running_status="failed")
+                    pool_requires_reset = True
+                    raise DAGExecutionError(stop_reason)
+
+                dead_workers = self.actor_hypervisor.unexpected_worker_deaths()
+                if dead_workers:
+                    details = "; ".join(
+                        f"worker_id={item['worker_id']} route={item['route']!r} exitcode={item['exitcode']}"
+                        for item in dead_workers
+                    )
+                    stop_reason = f"Worker process died unexpectedly: {details}"
+                    mark_outstanding_terminal(stop_reason, running_status="failed")
+                    pool_requires_reset = True
+                    raise DAGExecutionError(stop_reason)
+
                 finished = sum(
                     1 for record in task_results.values() if record.status in {"completed", "failed", "blocked"}
                 )
@@ -417,7 +556,10 @@ class DAGOrchestrator:
 
                 remaining_timeout = self._remaining_timeout(started_at, timeout)
                 if remaining_timeout is not None and remaining_timeout <= 0:
-                    raise DAGExecutionError("DAG execution timed out")
+                    stop_reason = "DAG execution timed out"
+                    mark_outstanding_terminal(stop_reason, running_status="failed", timed_out=True)
+                    pool_requires_reset = True
+                    raise DAGExecutionError(stop_reason)
 
                 if not active_attempts:
                     if retry_ready_at:
@@ -427,9 +569,9 @@ class DAGOrchestrator:
                         time.sleep(min(0.05, wait_for_retry))
                         continue
                     pending = [task_id for task_id, record in task_results.items() if record.status == "pending"]
-                    raise DAGExecutionError(
-                        f"DAG execution stalled with pending tasks: {', '.join(pending)}",
-                    )
+                    stop_reason = f"DAG execution stalled with pending tasks: {', '.join(pending)}"
+                    mark_outstanding_terminal(stop_reason)
+                    raise DAGExecutionError(stop_reason)
 
                 result = self.actor_hypervisor.get_result(
                     timeout=self._next_wait_timeout(remaining_timeout, retry_ready_at, attempt_deadlines)
@@ -437,16 +579,26 @@ class DAGOrchestrator:
                 if result is None:
                     continue
 
-                task_id = result["task_id"]
-                record = task_results[task_id]
-                attempt = int(result.get("attempt") or record.attempts)
-                attempt_key = (task_id, attempt)
-                if attempt_key not in active_attempts:
+                # A shared pool may still surface an old generation result. Never
+                # correlate it by task ID alone.
+                if result.get("run_id") != run_id:
                     continue
-                active_attempts.remove(attempt_key)
-                attempt_deadlines.pop(attempt_key, None)
+                attempt_id = result.get("attempt_id")
+                if not isinstance(attempt_id, str) or attempt_id not in active_attempts:
+                    continue
+                task_id, attempt = active_attempts.pop(attempt_id)
+                if result.get("task_id") != task_id:
+                    stop_reason = (
+                        f"Worker result correlation failed for attempt {attempt_id}: "
+                        f"expected task {task_id}, got {result.get('task_id')!r}"
+                    )
+                    mark_outstanding_terminal(stop_reason, running_status="failed")
+                    pool_requires_reset = True
+                    raise DAGExecutionError(stop_reason)
+                record = task_results[task_id]
+                attempt_deadlines.pop(attempt_id, None)
                 record.completed_at = time.monotonic()
-                if record.status != "running" or record.attempts != attempt:
+                if record.status != "running" or record.attempts != attempt or record.current_attempt_id != attempt_id:
                     continue
 
                 if result.get("error"):
@@ -459,9 +611,6 @@ class DAGOrchestrator:
                 record.result = result.get("result")
                 execution_order.append(task_id)
 
-                if failures_seen and fail_fast:
-                    continue
-
                 for dependent_id in dependents[task_id]:
                     dependent_record = task_results[dependent_id]
                     if dependent_record.status != "pending":
@@ -470,17 +619,7 @@ class DAGOrchestrator:
                     if dependency_counts[dependent_id] == 0:
                         submit_task(dependent_id)
 
-            completed_at = time.monotonic()
-            leaf_task_ids = [task.id for task in dag.tasks if not dependents[task.id]]
-            report = DAGExecutionReport(
-                task_results=task_results,
-                execution_order=execution_order,
-                final_result=self.reducer(dag, task_results),
-                leaf_task_ids=leaf_task_ids,
-                started_at=started_at,
-                completed_at=completed_at,
-                context_metadata=context_metadata,
-            )
+            report = build_report()
 
             if report.failed_task_ids:
                 message = f"DAG execution failed for tasks: {', '.join(report.failed_task_ids)}"
@@ -491,25 +630,31 @@ class DAGOrchestrator:
             return report
         except DAGExecutionError as exc:
             if exc.report is None:
-                completed_at = time.monotonic()
-                leaf_task_ids = [task.id for task in dag.tasks if not dependents[task.id]]
-                exc.report = DAGExecutionReport(
-                    task_results=task_results,
-                    execution_order=execution_order,
-                    final_result=self.reducer(dag, task_results),
-                    leaf_task_ids=leaf_task_ids,
-                    started_at=started_at,
-                    completed_at=completed_at,
-                    context_metadata=context_metadata,
-                )
+                exc.report = build_report()
             if fail_fast:
                 raise
             return exc.report
+        except Exception:
+            if active_attempts:
+                pool_requires_reset = True
+                mark_outstanding_terminal("Execution aborted by an unexpected orchestrator error")
+            raise
         finally:
-            if started_here:
-                self.actor_hypervisor.shutdown()
-            if owned_context_manager is not None:
-                owned_context_manager.close()
+            try:
+                if pool_requires_reset:
+                    if started_here:
+                        if self.actor_hypervisor.started:
+                            self.actor_hypervisor.shutdown(timeout=2.0, force=True)
+                    else:
+                        self.actor_hypervisor.restart(timeout=2.0)
+                elif started_here:
+                    self.actor_hypervisor.shutdown()
+            finally:
+                try:
+                    if owned_context_manager is not None:
+                        owned_context_manager.close()
+                finally:
+                    self.actor_hypervisor.release_run(run_id)
 
     @staticmethod
     def _remaining_timeout(started_at: float, timeout: float | None) -> float | None:
@@ -521,9 +666,9 @@ class DAGOrchestrator:
     def _next_wait_timeout(
         remaining_timeout: float | None,
         retry_ready_at: dict[str, float],
-        attempt_deadlines: dict[tuple[str, int], float],
+        attempt_deadlines: dict[str, float],
     ) -> float:
-        wait_timeout = 0.5
+        wait_timeout = 0.1
         if remaining_timeout is not None:
             wait_timeout = min(wait_timeout, max(0.0, remaining_timeout))
         now = time.monotonic()

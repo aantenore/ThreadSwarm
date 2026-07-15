@@ -1,0 +1,49 @@
+{
+  "name": "text_pipeline",
+  "toolkit": "text",
+  "payload": "hello local dag",
+  "dag": [
+    {
+      "id": "task_1",
+      "description": "Normalize",
+      "instruction": "Normalize input",
+      "dependencies": [],
+      "tool_name": "normalize-text"
+    },
+    {
+      "id": "task_2",
+      "description": "Count",
+      "instruction": "Count words",
+      "dependencies": ["task_1"],
+      "tool_name": "word-count"
+    },
+    {
+      "id": "task_3",
+      "description": "Collect",
+      "instruction": "Collect outputs",
+      "dependencies": ["task_1", "task_2"],
+      "tool_name": "collect-json"
+    }
+  ],
+  "expect": {
+    "summary": {
+      "succeeded": true,
+      "total_tasks": 3,
+      "completed_tasks": 3,
+      "failed_tasks": 0,
+      "blocked_tasks": 0,
+      "execution_order": ["task_1", "task_2", "task_3"],
+      "leaf_task_ids": ["task_3"]
+    },
+    "final_result": {
+      "dependency_results": {
+        "task_1": {
+          "text": "HELLO LOCAL DAG"
+        },
+        "task_2": {
+          "word_count": 3
+        }
+      }
+    }
+  }
+}

@@ -25,25 +25,19 @@ It is a weak fit for:
 
 ## Current Landscape
 
-Sources checked on 2026-06-19:
+Sources checked on 2026-07-10:
 - LangGraph: https://docs.langchain.com/oss/python/langgraph/overview
-- Microsoft Agent Framework: https://learn.microsoft.com/en-us/agent-framework/overview/
-- CrewAI: https://docs.crewai.com/en/introduction
-- OpenAI Agents SDK tracing: https://openai.github.io/openai-agents-python/tracing/
 - MCP specification: https://modelcontextprotocol.io/specification/2025-11-25
-- Prefect: https://docs.prefect.io/v3/get-started
-- Dagster: https://docs.dagster.io/
-- Ray objects: https://docs.ray.io/en/latest/ray-core/key-concepts.html
+- Prefect task runners: https://docs.prefect.io/v3/concepts/task-runners
+- Dask local scheduling: https://docs.dask.org/en/stable/scheduling.html
+- Ray object serialization: https://docs.ray.io/en/latest/ray-core/objects/serialization.html
 
 The market already covers several adjacent jobs:
 
 | Alternative | Strong at | Why ThreadSwarm should not clone it |
 |---|---|---|
 | LangGraph | long-running stateful agent orchestration | much richer state, persistence, and production runtime story |
-| Microsoft Agent Framework | enterprise agent SDK and telemetry | stronger ecosystem and provider integration |
-| CrewAI | high-level multi-agent automation | better role/crew abstraction and user-facing automation story |
-| OpenAI Agents SDK | provider-native agents, tracing, guardrails | best when OpenAI-hosted primitives are the desired runtime |
-| Prefect/Dagster | workflow/data orchestration | scheduling, observability, lineage, retries, and operations are mature |
+| Prefect/Dask | workflow orchestration and parallel task execution | mature scheduling, integrations, and operational controls |
 | Ray | distributed Python execution and object store | production-grade distributed scheduling and shared objects |
 
 ## Differentiation
@@ -52,7 +46,7 @@ ThreadSwarm can still be useful because its design center is different:
 
 - local-first execution rather than managed orchestration;
 - process-based CPU workers rather than cloud/distributed runtime first;
-- zero-copy shared memory for large payloads on one machine;
+- read-only zero-copy `ndarray` views, plus shared-memory transport for text and bytes on one machine;
 - deterministic local tools as the default path;
 - small dependency footprint and embeddable code;
 - explicit DAG validation before execution.
@@ -60,6 +54,12 @@ ThreadSwarm can still be useful because its design center is different:
 Novelty score: 2/4 today.
 
 It is not novel as "agent orchestration". It is meaningfully differentiated as a small local runtime for CPU-friendly tool DAGs over shared multimodal context. It can become 3/4 if it adds strong observability, tool contracts, local model adapters, and repeatable evals around that wedge.
+
+Shared-memory NumPy transport is not novel by itself: Ray also documents
+same-node, read-only zero-copy deserialization for NumPy arrays. The defensible
+wedge is therefore the combination of a small embeddable runtime, explicit
+local-tool routing, deterministic evals, and minimal infrastructure—not the
+shared-memory primitive in isolation.
 
 ## Capability Roadmap
 
@@ -69,6 +69,9 @@ Must have:
 - failure reports that are useful for regression tests;
 - packaged local tool examples beyond incident triage;
 - provider adapters kept behind configuration.
+- a capability-aware compiler that receives the configured tool/worker catalog
+  and cannot silently invent executable routes;
+- one supported compile-and-run path that binds planning to those capabilities.
 
 Should have:
 - retry policies per task (implemented);
@@ -84,6 +87,16 @@ Could have:
 - visual DAG export;
 - Ray/Prefect bridge for users who outgrow the local runtime;
 - physical package move away from internal `src.*` modules.
+
+## Current Product Gap
+
+The compiler and executor are deliberately separate today. `SemanticCompiler`
+can produce a validated DAG, and the runtime can execute an explicitly routed
+DAG, but the compiler does not yet receive the live tool/worker catalog and the
+CLI has no single compile-and-run command. An LLM-generated route can therefore
+be rejected by the runtime—which is safer than falling back to the wrong pool,
+but means ThreadSwarm is currently an execution-runtime MVP rather than a
+complete autonomous agent product.
 
 ## Implementation Decision
 
@@ -121,12 +134,18 @@ Task execution now supports:
 - `retry_count`;
 - `retry_delay_seconds`;
 - `timeout_seconds`;
-- attempt counts and retry errors in execution reports.
+- run/attempt correlation IDs and retry errors in execution reports;
+- fail-closed route validation;
+- worker-death detection and complete-hypervisor recovery.
 
-Timeout behavior is attempt-scoped: when a task exceeds its logical deadline,
-the orchestrator marks that attempt failed, can retry it, and ignores late
-results from expired attempts. Hard-killing only the specific in-flight worker is
-still out of scope for the current lightweight local pool.
+Timeout behavior is attempt-scoped and begins after a worker start
+acknowledgement. When a task exceeds its logical deadline, the orchestrator
+marks that attempt failed, can retry it, and ignores late results using run and
+attempt IDs. Hard-killing only the specific in-flight worker remains out of
+scope; the lightweight runtime discards the current generation and starts a fresh
+generation of every route pool.
+Concurrent in-flight work is not replayed automatically because its side-effect
+state may be unknown.
 
 CLI execution now supports:
 - `threadswarm run-dag` for JSON DAG files;
@@ -156,7 +175,7 @@ Packaging now supports:
 Build ThreadSwarm if the target is local, CPU-first, deterministic-tool-heavy workflows.
 
 Integrate instead of competing when users need:
-- long-running durable orchestration: use LangGraph, Microsoft Agent Framework, or workflow engines;
+- long-running durable orchestration: use LangGraph or a workflow engine;
 - enterprise data orchestration: use Dagster or Prefect;
 - distributed compute: use Ray;
 - standardized external tool ecosystems: add MCP compatibility rather than inventing a private protocol.
