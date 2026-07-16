@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 from dataclasses import dataclass
 from typing import Mapping
@@ -29,9 +30,18 @@ class ThreadSwarmConfig:
             raise ThreadSwarmConfigError("llm_base_url cannot be empty")
         if not self.llm_model.strip():
             raise ThreadSwarmConfigError("llm_model cannot be empty")
-        if self.llm_timeout <= 0:
-            raise ThreadSwarmConfigError("llm_timeout must be greater than 0")
-        if self.default_workers is not None and self.default_workers <= 0:
+        if (
+            isinstance(self.llm_timeout, bool)
+            or not isinstance(self.llm_timeout, (int, float))
+            or not math.isfinite(self.llm_timeout)
+            or self.llm_timeout <= 0
+        ):
+            raise ThreadSwarmConfigError("llm_timeout must be a finite number greater than 0")
+        if self.default_workers is not None and (
+            isinstance(self.default_workers, bool)
+            or not isinstance(self.default_workers, int)
+            or self.default_workers <= 0
+        ):
             raise ThreadSwarmConfigError("default_workers must be greater than 0 when set")
 
     @classmethod

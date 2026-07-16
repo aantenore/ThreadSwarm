@@ -96,6 +96,21 @@ Or run a DAG JSON file with the built-in text toolkit:
 threadswarm run-dag path/to/dag.json --payload "hello local dag" --json
 ```
 
+With an OpenAI-compatible compiler provider running, compile natural-language
+intent against the exact built-in toolkit and execute the bound result:
+
+```bash
+threadswarm compile-run "Normalize the payload and count its words" \
+  --payload "hello local dag" \
+  --json \
+  --plan-file reports/bound-plan.json \
+  --report-file reports/compile-run.json
+```
+
+The compiler cannot grant itself a route. ThreadSwarm exposes only tools admitted
+by the local capability policy, rejects unknown or modality-incompatible routes,
+and verifies the registry and plan digests again before worker startup.
+
 Run the deterministic fixture bundled with ThreadSwarm from any working directory:
 
 ```bash

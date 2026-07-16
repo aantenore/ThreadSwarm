@@ -266,6 +266,21 @@ def test_registry_applies_configured_default_workers_and_rejects_invalid_overrid
         registry.register("invalid", _local_tool_inference, num_workers=0)
 
 
+@pytest.mark.parametrize(
+    "invalid_limit",
+    [True, False, 1.5, float("nan"), float("inf"), 0, -1],
+)
+def test_registry_rejects_non_integer_or_non_positive_result_size_limits(invalid_limit):
+    registry = LocalToolRegistry()
+
+    with pytest.raises(ValueError, match="positive integer"):
+        registry.register(
+            "bounded-tool",
+            _local_tool_inference,
+            result_size_limit=invalid_limit,
+        )
+
+
 def test_local_tool_contracts_validate_output_and_expose_metadata():
     dag = TaskDAG(
         tasks=[

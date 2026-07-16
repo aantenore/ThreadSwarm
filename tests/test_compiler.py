@@ -2,12 +2,24 @@
 
 import pytest
 
+from src.compiler import parser as compiler_parser
 from threadswarm.compiler.parser import (
     SemanticCompiler,
     SemanticCompilationError,
     SubTask,
     TaskDAG,
 )
+
+
+class _FakeResponse:
+    def __init__(self, payload):
+        self.payload = payload
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return self.payload
 
 
 def test_subtask_and_dag_validation():
@@ -62,6 +74,102 @@ def test_parse_llm_output_with_retry_policy():
     assert dag.tasks[0].retry_count == 2
     assert dag.tasks[0].retry_delay_seconds == 0.25
     assert dag.tasks[0].timeout_seconds == 5.0
+
+
+def test_semantic_compiler_sends_catalog_only_in_system_message(monkeypatch):
+    calls = []
+
+    class FakeClient:
+        def __init__(self, *, timeout):
+            self.timeout = timeout
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def post(self, url, json):
+            calls.append({"url": url, "payload": json, "timeout": self.timeout})
+            return _FakeResponse(
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": (
+                                    '[{"id":"task_1","description":"Normalize",'
+                                    '"instruction":"Normalize input","dependencies":[],'
+                                    '"tool_name":"normalize-text"}]'
+                                )
+                            }
+                        }
+                    ]
+                }
+            )
+
+    monkeypatch.setattr(compiler_parser.httpx, "Client", FakeClient)
+    compiler = SemanticCompiler(base_url="http://local-compiler/v1", model="planner", timeout=4.0)
+    catalog = {
+        "schema_version": 1,
+        "catalog_digest": "abc",
+        "tools": [{"name": "normalize-text", "description": "Normalize text"}],
+    }
+
+    dag = compiler.compile("Prepare my payload", capability_catalog=catalog)
+
+    assert dag.tasks[0].tool_name == "normalize-text"
+    assert calls[0]["url"] == "http://local-compiler/v1/chat/completions"
+    assert calls[0]["timeout"] == 4.0
+    messages = calls[0]["payload"]["messages"]
+    assert '"catalog_digest":"abc"' in messages[0]["content"]
+    assert messages[1] == {"role": "user", "content": "Prepare my payload"}
+
+
+def test_semantic_compiler_rejects_oversized_response_before_dag_validation(monkeypatch):
+    class FakeClient:
+        def __init__(self, *, timeout):
+            self.timeout = timeout
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def post(self, url, json):
+            return _FakeResponse(
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": (
+                                    '[{"id":"task_1","description":"Normalize",'
+                                    '"instruction":"Normalize input","dependencies":[],"tool_name":"normalize-text"}]'
+                                )
+                            }
+                        }
+                    ]
+                }
+            )
+
+    monkeypatch.setattr(compiler_parser.httpx, "Client", FakeClient)
+    compiler = SemanticCompiler(base_url="http://local-compiler/v1", model="planner")
+    catalog = {
+        "compiler_limits": {"max_response_chars": 8},
+        "plan_limits": {"max_tasks": 1},
+        "tools": [{"name": "normalize-text"}],
+    }
+
+    with pytest.raises(SemanticCompilationError, match="LLM output has"):
+        compiler.compile("Prepare my payload", capability_catalog=catalog)
+
+
+def test_semantic_compiler_rejects_task_count_before_model_validation():
+    compiler = SemanticCompiler(base_url="http://localhost:11434/v1", model="dummy")
+    raw = "[{}, {}]"
+
+    with pytest.raises(SemanticCompilationError, match="allows at most 1"):
+        compiler._parse_llm_output(raw, max_tasks=1)
 
 
 def test_parse_llm_output_invalid_raises():

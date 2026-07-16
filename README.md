@@ -12,7 +12,7 @@ The key idea is simple:
 Despite the name, execution workers are **processes**, not threads, so CPU-bound tools can run independently. ThreadSwarm is an explicit, dependency-driven DAG runtime, not a swarm of autonomous agents or a distributed cluster scheduler.
 
 > [!IMPORTANT]
-> A `TaskDAG` can be written in Python, loaded from JSON, or produced by the optional `SemanticCompiler`. Compilation and execution are separate today: the compiler does not yet know the registered tool catalog or automatically launch the resulting DAG.
+> A `TaskDAG` can be written in Python, loaded from JSON, or produced by the optional `SemanticCompiler`. For autonomous local execution, `CapabilityAwareRuntime` gives the compiler only the policy-admitted live tool catalog, rejects invented or ambiguous routes, and binds the resulting DAG to that catalog before launching it.
 
 ## Why
 
@@ -29,7 +29,11 @@ ThreadSwarm takes the opposite approach: decompose work into small steps and rou
 flowchart LR
     P["Python or JSON"] --> D["Validated TaskDAG"]
     U["User intent"] --> C["SemanticCompiler<br/>(optional)"]
-    C -. "explicit handoff" .-> D
+    G["LocalToolRegistry"] --> B["Policy-admitted<br/>capability catalog"]
+    B --> C
+    C --> Q["Digest-bound TaskDAG"]
+    Q --> D
+    G -. "pre-execution fence" .-> D
     X["Immutable input"] --> S["Shared-memory block"]
     D --> O["DAGOrchestrator"]
     S -. "small metadata" .-> O
@@ -45,7 +49,7 @@ The code is split into a few small pieces:
 - `threadswarm/`: public package namespace
 - `src/config.py`: internal typed runtime configuration for provider/model settings
 - `src/cli.py`: internal command line implementation for validation, compilation, and demos
-- `src/compiler/`: planning only
+- `src/compiler/`: semantic planning plus capability catalog, policy, and binding gates
 - `src/demos/`: packaged runnable demos and sample data
 - `src/engine/shared_memory.py`: read-only zero-copy input views for `ndarray`; shared-memory transport for `str` and `bytes`
 - `src/engine/actor_pool.py`: process-based execution pool
@@ -72,6 +76,12 @@ What the repo can do today:
 - run file-backed golden eval fixtures for deterministic DAG regressions
 - run packaged demos and DAG validation through the `threadswarm` CLI
 - configure compiler provider settings through typed environment-backed config
+- compile natural-language intent against the exact policy-admitted live tool catalog
+- reject missing, invented, ambiguous, side-effecting-by-default, or modality-incompatible routes before worker startup
+- fence catalog drift and post-compilation DAG mutation with deterministic SHA-256 digests
+- bound prompt, catalog, response, DAG, retry, task-timeout, and whole-run resource budgets in application policy
+- start worker processes only for tools selected by the verified execution snapshot
+- compile and execute one bound local-tool DAG through the `threadswarm compile-run` CLI
 
 What is still intentionally lightweight:
 
@@ -123,6 +133,7 @@ Shared-memory reconstruction has type-specific semantics. NumPy inputs become re
 | [Configuration](docs/configuration.md) | Environment-backed compiler and worker defaults |
 | [Product Strategy](docs/product-strategy.md) | Positioning, trade-offs, and capability roadmap |
 | [Run Isolation RFC](docs/rfcs/0001-run-isolation-and-pool-recovery.md) | Rationale behind run fencing and pool recovery |
+| [Capability Binding RFC](docs/rfcs/0002-capability-bound-compilation.md) | Trust boundary, policy, prompt projection, and digest fences |
 
 ## Repository Structure
 
@@ -207,6 +218,22 @@ Run a DAG JSON file with the built-in text toolkit:
 threadswarm run-dag path/to/dag.json --payload "hello local dag" --json
 ```
 
+Compile intent against that toolkit and execute only the bound plan:
+
+```bash
+threadswarm compile-run "Normalize the input, then count its words" \
+  --payload "hello local dag" \
+  --json \
+  --plan-file reports/bound-plan.json \
+  --report-file reports/compile-run.json
+```
+
+`compile-run` needs the configured OpenAI-compatible compiler provider. The model
+only proposes a DAG; registry policy, route validation, and both integrity fences
+remain deterministic application code. The whole run defaults to a 300-second
+budget and may be raised only as far as the application policy allows. When
+execution starts but fails, requested plan and report files are still written.
+
 Run deterministic golden eval fixtures:
 
 ```bash
@@ -237,4 +264,4 @@ THREADSWARM_LLM_TIMEOUT=60
 
 ## Status
 
-The local DAG execution runtime is implemented, packaged, CLI-accessible, and covered by tests. The optional semantic compiler is also implemented, but it remains a separate planning step. The next useful layer is capability-aware compile-and-run: give the compiler the exact registered tool/worker catalog, then bind its plan directly to the fail-closed runtime.
+The local DAG execution runtime is implemented, packaged, CLI-accessible, and covered by tests. Capability-aware compile-and-run is now implemented for registered local tools: the compiler sees a compact policy-admitted catalog, while deterministic code rejects unsafe routes and verifies catalog and plan digests immediately before execution. Model-worker catalog binding, MCP discovery, persistence, and distributed execution remain future integration layers rather than implicit fallbacks.

@@ -39,7 +39,23 @@ threadswarm compile "Analyze this incident bundle and produce a triage DAG" \
   --model llama3.2
 ```
 
-`compile` and `OpenAICompatibleWorker` need a running OpenAI-compatible provider.
+Use the same provider settings for capability-bound local execution:
+
+```bash
+threadswarm compile-run "Normalize the input, then count its words" \
+  --toolkit text \
+  --payload "hello local runtime" \
+  --base-url http://localhost:11434/v1 \
+  --model llama3.2 \
+  --json
+```
+
+`compile`, `compile-run`, and `OpenAICompatibleWorker` need a running
+OpenAI-compatible provider. `compile-run` uses `--timeout` for the compiler HTTP
+request and the separate `--run-timeout` for the complete DAG execution.
+The capability policy defaults the whole-run budget to 300 seconds and caps an
+explicit override at 1,800 seconds. Library hosts can construct a stricter
+`CapabilityPolicy`; compiler output cannot raise those limits.
 The local-tool demo, JSON DAG runner, and DAG validator do not.
 
 ## Optional Vision Dependency

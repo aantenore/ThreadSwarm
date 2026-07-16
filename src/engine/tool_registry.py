@@ -8,6 +8,7 @@ tool that runs on a normal PC, or to a model-backed worker when available.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from collections.abc import Iterable
 from typing import Any
 
 from pydantic import BaseModel, ValidationError
@@ -153,8 +154,12 @@ class LocalToolRegistry:
             raise ValueError("Tool risk_class cannot be empty")
         if not side_effect_class.strip():
             raise ValueError("Tool side_effect_class cannot be empty")
-        if result_size_limit is not None and result_size_limit <= 0:
-            raise ValueError("Tool result_size_limit must be greater than 0 when set")
+        if result_size_limit is not None and (
+            isinstance(result_size_limit, bool)
+            or not isinstance(result_size_limit, int)
+            or result_size_limit <= 0
+        ):
+            raise ValueError("Tool result_size_limit must be a positive integer when set")
         spec = LocalToolSpec(
             name=name,
             run=run,
@@ -184,21 +189,34 @@ class LocalToolRegistry:
     def contracts(self) -> dict[str, dict[str, Any]]:
         return {name: spec.to_contract_dict() for name, spec in self._tools.items()}
 
-    def to_worker_configs(self) -> list[dict[str, Any]]:
+    def to_worker_configs(self, *, tool_names: Iterable[str] | None = None) -> list[dict[str, Any]]:
+        specs = self._selected_specs(tool_names)
         return [
             {
                 "model_type": spec.name,
                 "num_workers": spec.num_workers,
                 "run_inference_hook": ValidatedToolRunner(spec.name, spec.run, spec.contract),
             }
-            for spec in self._tools.values()
+            for spec in specs
         ]
 
-    def create_hypervisor(self) -> ActorHypervisor:
-        worker_configs = self.to_worker_configs()
+    def create_hypervisor(self, *, tool_names: Iterable[str] | None = None) -> ActorHypervisor:
+        worker_configs = self.to_worker_configs(tool_names=tool_names)
         if not worker_configs:
             raise ValueError("No local tools registered")
         return ActorHypervisor(worker_configs=worker_configs)
+
+    def _selected_specs(self, tool_names: Iterable[str] | None) -> list[LocalToolSpec]:
+        if tool_names is None:
+            return list(self._tools.values())
+        selected: list[LocalToolSpec] = []
+        seen: set[str] = set()
+        for name in tool_names:
+            if name in seen:
+                continue
+            seen.add(name)
+            selected.append(self.get(name))
+        return selected
 
 
 def _build_execution_input(

@@ -69,9 +69,10 @@ Must have:
 - failure reports that are useful for regression tests;
 - packaged local tool examples beyond incident triage;
 - provider adapters kept behind configuration.
-- a capability-aware compiler that receives the configured tool/worker catalog
-  and cannot silently invent executable routes;
-- one supported compile-and-run path that binds planning to those capabilities.
+- a capability-aware compiler that receives the configured local-tool catalog
+  and cannot silently invent executable routes (implemented);
+- one supported compile-and-run path that binds planning to those capabilities
+  (implemented for local tools).
 
 Should have:
 - retry policies per task (implemented);
@@ -90,13 +91,18 @@ Could have:
 
 ## Current Product Gap
 
-The compiler and executor are deliberately separate today. `SemanticCompiler`
-can produce a validated DAG, and the runtime can execute an explicitly routed
-DAG, but the compiler does not yet receive the live tool/worker catalog and the
-CLI has no single compile-and-run command. An LLM-generated route can therefore
-be rejected by the runtime—which is safer than falling back to the wrong pool,
-but means ThreadSwarm is currently an execution-runtime MVP rather than a
-complete autonomous agent product.
+The local-tool compiler and executor now have one supported bound path.
+`CapabilityAwareRuntime` derives a bounded catalog from `LocalToolRegistry`,
+filters it through explicit risk and side-effect policy, supplies a compact
+projection to `SemanticCompiler`, validates every proposed route, and verifies
+catalog and plan digests before execution. `threadswarm compile-run` exposes the
+same transaction from the CLI.
+
+The remaining gap is integration breadth, not an absent safety boundary. Model
+worker catalogs, MCP discovery, and external execution backends need their own
+typed capability adapters and policies; they must not become implicit fallback
+routes. The runtime also remains local and ephemeral rather than durable or
+distributed.
 
 ## Implementation Decision
 
@@ -169,6 +175,17 @@ Packaging now supports:
 - public `threadswarm.*` imports;
 - `threadswarm.cli:main` as the console entrypoint;
 - compatibility wrappers over the current internal `src.*` modules.
+
+Capability-aware compilation now supports:
+
+- a stable, compact prompt projection of only policy-admitted local tools;
+- descriptions and schemas explicitly marked as untrusted data;
+- default admission of bounded read/search/compute tools with no side effects;
+- structured rejection of missing, invented, ambiguous, or modality-invalid routes;
+- catalog and bound-plan digests that detect registry drift and DAG mutation;
+- application-owned budgets for context, response, DAG size, retries, tasks, and runs;
+- a verified execution snapshot and least-privilege startup of only selected tool pools;
+- `threadswarm compile-run` with separate plan and full report evidence files.
 
 ## Build-Vs-Buy Recommendation
 

@@ -42,3 +42,10 @@ def test_config_rejects_invalid_numbers():
 
     with pytest.raises(ThreadSwarmConfigError, match="default_workers"):
         ThreadSwarmConfig(default_workers=0)
+
+    for invalid_timeout in (float("nan"), float("inf"), float("-inf"), True):
+        with pytest.raises(ThreadSwarmConfigError, match="finite"):
+            ThreadSwarmConfig(llm_timeout=invalid_timeout)
+
+    with pytest.raises(ThreadSwarmConfigError, match="default_workers"):
+        ThreadSwarmConfig(default_workers=True)

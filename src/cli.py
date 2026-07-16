@@ -9,7 +9,14 @@ import sys
 from pathlib import Path
 from typing import Sequence
 
-from src.compiler import SemanticCompilationError, SemanticCompiler, parse_task_dag_json
+from src.compiler import (
+    CapabilityAwareRuntime,
+    CapabilityExecutionError,
+    CapabilityRunResult,
+    SemanticCompilationError,
+    SemanticCompiler,
+    parse_task_dag_json,
+)
 from src.config import ThreadSwarmConfig, ThreadSwarmConfigError
 from src.demos.incident_triage import load_bundle_text, run_demo
 from src.engine import DAGExecutionError, DAGExecutionReport, DAGOrchestrator
@@ -27,10 +34,46 @@ def build_parser() -> argparse.ArgumentParser:
 
     compile_parser = subparsers.add_parser("compile", help="Compile a natural language prompt into a TaskDAG.")
     compile_parser.add_argument("prompt", help="High-level intent to decompose.")
-    compile_parser.add_argument("--base-url", help="OpenAI-compatible API base URL.")
-    compile_parser.add_argument("--model", help="Model name to request from the compiler provider.")
-    compile_parser.add_argument("--timeout", type=float, help="Compiler HTTP timeout in seconds.")
+    _add_compiler_provider_args(compile_parser)
     compile_parser.set_defaults(handler=_handle_compile)
+
+    compile_run_parser = subparsers.add_parser(
+        "compile-run",
+        help="Compile intent against the live tool catalog and execute the bound DAG.",
+    )
+    compile_run_parser.add_argument("prompt", help="High-level intent to compile and execute.")
+    compile_run_parser.add_argument(
+        "--toolkit",
+        choices=("text",),
+        default="text",
+        help="Built-in local toolkit to expose to the compiler.",
+    )
+    compile_run_parser.add_argument("--payload", default=None, help="Inline text payload for the DAG.")
+    compile_run_parser.add_argument(
+        "--input-file",
+        type=Path,
+        default=None,
+        help="Read text payload from this file.",
+    )
+    compile_run_parser.add_argument("--json", action="store_true", help="Print final result as JSON.")
+    compile_run_parser.add_argument("--plan-file", type=Path, help="Write the bound plan JSON to this path.")
+    compile_run_parser.add_argument(
+        "--report-file",
+        type=Path,
+        help="Write the bound plan and full execution report JSON to this path.",
+    )
+    compile_run_parser.add_argument(
+        "--run-timeout",
+        type=float,
+        help="Maximum execution time in seconds for the full compiled DAG.",
+    )
+    compile_run_parser.add_argument(
+        "--no-fail-fast",
+        action="store_true",
+        help="Return a report instead of raising on task failure.",
+    )
+    _add_compiler_provider_args(compile_run_parser)
+    compile_run_parser.set_defaults(handler=_handle_compile_run)
 
     run_parser = subparsers.add_parser("run-dag", help="Run a TaskDAG JSON file with a built-in local toolkit.")
     run_parser.add_argument("dag_file", type=Path, help="Path to a JSON DAG array or object with a tasks key.")
@@ -71,7 +114,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         return args.handler(args)
-    except (OSError, DAGExecutionError, ThreadSwarmConfigError, SemanticCompilationError, ValueError) as exc:
+    except (
+        OSError,
+        CapabilityExecutionError,
+        DAGExecutionError,
+        ThreadSwarmConfigError,
+        SemanticCompilationError,
+        ValueError,
+    ) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
@@ -97,31 +147,31 @@ def _handle_validate_dag(args: argparse.Namespace) -> int:
 
 
 def _handle_compile(args: argparse.Namespace) -> int:
-    config = ThreadSwarmConfig.from_env(os.environ)
-    if args.base_url:
-        config = ThreadSwarmConfig(
-            llm_base_url=args.base_url,
-            llm_model=config.llm_model,
-            llm_timeout=config.llm_timeout,
-            default_workers=config.default_workers,
-        )
-    if args.model:
-        config = ThreadSwarmConfig(
-            llm_base_url=config.llm_base_url,
-            llm_model=args.model,
-            llm_timeout=config.llm_timeout,
-            default_workers=config.default_workers,
-        )
-    if args.timeout is not None:
-        config = ThreadSwarmConfig(
-            llm_base_url=config.llm_base_url,
-            llm_model=config.llm_model,
-            llm_timeout=args.timeout,
-            default_workers=config.default_workers,
-        )
-
+    config = _config_from_compiler_args(args)
     dag = SemanticCompiler.from_config(config).compile(args.prompt)
     print(dag.model_dump_json(indent=2))
+    return 0
+
+
+def _handle_compile_run(args: argparse.Namespace) -> int:
+    config = _config_from_compiler_args(args)
+    registry = _build_registry(args.toolkit, default_workers=config.default_workers)
+    runtime = CapabilityAwareRuntime(SemanticCompiler.from_config(config), registry)
+    try:
+        result = runtime.compile_and_run(
+            args.prompt,
+            context=_read_payload(args.payload, args.input_file),
+            fail_fast=not args.no_fail_fast,
+            timeout=args.run_timeout,
+        )
+    except CapabilityExecutionError as error:
+        _write_capability_artifacts(args, error.result)
+        raise
+    _write_capability_artifacts(args, result)
+    if args.json:
+        print(json.dumps(result.execution.final_result, indent=2, sort_keys=True))
+    else:
+        print(result.execution.final_result)
     return 0
 
 
@@ -183,11 +233,23 @@ def _handle_incident_triage_demo(args: argparse.Namespace) -> int:
 
 
 def _write_report_file(report: DAGExecutionReport, path: Path) -> None:
+    _write_json_file(report.to_dict(include_dependency_results=True), path)
+
+
+def _write_capability_report_file(result: CapabilityRunResult, path: Path) -> None:
+    _write_json_file(result.to_dict(include_dependency_results=True), path)
+
+
+def _write_capability_artifacts(args: argparse.Namespace, result: CapabilityRunResult) -> None:
+    if args.plan_file:
+        _write_json_file(result.plan.to_dict(), args.plan_file)
+    if args.report_file:
+        _write_capability_report_file(result, args.report_file)
+
+
+def _write_json_file(payload: object, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(report.to_dict(include_dependency_results=True), indent=2, sort_keys=True),
-        encoding="utf-8",
-    )
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
 
 
 def _read_payload(payload: str | None, input_file: Path | None) -> str:
@@ -202,6 +264,22 @@ def _build_registry(toolkit: str, *, default_workers: int | None = None):
     if toolkit == "text":
         return build_text_tool_registry(default_workers=default_workers)
     raise ValueError(f"Unknown toolkit: {toolkit}")
+
+
+def _add_compiler_provider_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--base-url", help="OpenAI-compatible API base URL.")
+    parser.add_argument("--model", help="Model name to request from the compiler provider.")
+    parser.add_argument("--timeout", type=float, help="Compiler HTTP timeout in seconds.")
+
+
+def _config_from_compiler_args(args: argparse.Namespace) -> ThreadSwarmConfig:
+    config = ThreadSwarmConfig.from_env(os.environ)
+    return ThreadSwarmConfig(
+        llm_base_url=args.base_url or config.llm_base_url,
+        llm_model=args.model or config.llm_model,
+        llm_timeout=config.llm_timeout if args.timeout is None else args.timeout,
+        default_workers=config.default_workers,
+    )
 
 
 if __name__ == "__main__":
