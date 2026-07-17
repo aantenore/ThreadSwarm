@@ -265,3 +265,7 @@ THREADSWARM_LLM_TIMEOUT=60
 ## Status
 
 The local DAG execution runtime is implemented, packaged, CLI-accessible, and covered by tests. Capability-aware compile-and-run is now implemented for registered local tools: the compiler sees a compact policy-admitted catalog, while deterministic code rejects unsafe routes and verifies catalog and plan digests immediately before execution. Model-worker catalog binding, MCP discovery, persistence, and distributed execution remain future integration layers rather than implicit fallbacks.
+
+## License
+
+Licensed under the [Apache License 2.0](LICENSE).
