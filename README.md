@@ -1,5 +1,21 @@
 # ThreadSwarm
 
+## In plain English
+
+ThreadSwarm helps one ordinary computer finish complex jobs more predictably by splitting them into small steps and sending each step to the right local worker. Instead of giving every task and the same large input to one oversized AI model, it reuses the input, runs independent work in parallel, and records exactly what succeeded or failed.
+
+**Example:** a team can process a large folder of support messages with separate local steps for cleaning, classification, policy checks, and summary generation. If one classifier fails, ThreadSwarm can retry that step without repeating the whole job.
+
+| Feature | What it means in the real world |
+| --- | --- |
+| Validated task graph | Work cannot silently run in an impossible order or depend on a missing step. |
+| Explicit capability routing | Teams choose which tool or model handles each task instead of accepting an opaque automatic choice. |
+| Shared immutable input | Large local data is loaded once, reducing avoidable copying between workers. |
+| Process-based parallelism | Independent CPU-heavy steps can make progress at the same time on one machine. |
+| Retries and structured reports | Failed work is easier to recover and every run is easier to explain. |
+
+## Technical summary
+
 ThreadSwarm is an embeddable, CPU-first Python runtime that executes a validated task DAG across local worker processes on one machine.
 
 The key idea is simple:
